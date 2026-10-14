@@ -35,10 +35,25 @@
 		A10000000000000000000048 /* IconRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000048 /* IconRenderer.swift */; };
 		A10000000000000000000050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000050 /* Assets.xcassets */; };
 		A10000000000000000000051 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000053 /* AppIcon.icns */; };
+		A20000000000000000000001 /* NetworkPacketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* NetworkPacketTests.swift */; };
+		A20000000000000000000002 /* DeviceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* DeviceManagerTests.swift */; };
+		A20000000000000000000003 /* PairingPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* PairingPersistenceTests.swift */; };
+		A20000000000000000000004 /* NetworkReachabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* NetworkReachabilityTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		G20000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F50000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F10000000000000000000001;
+			remoteInfo = KonnectMac;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		C10000000000000000000001 /* KonnectMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KonnectMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C20000000000000000000001 /* KonnectMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KonnectMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000001 /* KonnectMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KonnectMacApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -69,10 +84,21 @@
 		B10000000000000000000053 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		B10000000000000000000051 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000000000052 /* KonnectMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KonnectMac.entitlements; sourceTree = "<group>"; };
+		B20000000000000000000001 /* NetworkPacketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkPacketTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* DeviceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceManagerTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* PairingPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingPersistenceTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* NetworkReachabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachabilityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		D10000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D20000000000000000000001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -86,6 +112,7 @@
 			isa = PBXGroup;
 			children = (
 				E10000000000000000000002 /* KonnectMac */,
+				E20000000000000000000001 /* KonnectMacTests */,
 				E10000000000000000000099 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -94,6 +121,7 @@
 			isa = PBXGroup;
 			children = (
 				C10000000000000000000001 /* KonnectMac.app */,
+				C20000000000000000000001 /* KonnectMacTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -159,6 +187,17 @@
 			path = Plugins;
 			sourceTree = "<group>";
 		};
+		E20000000000000000000001 /* KonnectMacTests */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000001 /* NetworkPacketTests.swift */,
+				B20000000000000000000002 /* DeviceManagerTests.swift */,
+				B20000000000000000000003 /* PairingPersistenceTests.swift */,
+				B20000000000000000000004 /* NetworkReachabilityTests.swift */,
+			);
+			path = KonnectMacTests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -179,6 +218,24 @@
 			productReference = C10000000000000000000001 /* KonnectMac.app */;
 			productType = "com.apple.product-type.application";
 		};
+		F10000000000000000000002 /* KonnectMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F20000000000000000000002 /* Build configuration list for PBXNativeTarget "KonnectMacTests" */;
+			buildPhases = (
+				F30000000000000000000002 /* Sources */,
+				D20000000000000000000001 /* Frameworks */,
+				F40000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				G20000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = KonnectMacTests;
+			productName = KonnectMacTests;
+			productReference = C20000000000000000000001 /* KonnectMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -191,6 +248,10 @@
 				TargetAttributes = {
 					F10000000000000000000001 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					F10000000000000000000002 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = F10000000000000000000001;
 					};
 				};
 			};
@@ -208,6 +269,7 @@
 			projectRoot = "";
 			targets = (
 				F10000000000000000000001 /* KonnectMac */,
+				F10000000000000000000002 /* KonnectMacTests */,
 			);
 		};
 /* End PBXProject section */
@@ -219,6 +281,13 @@
 			files = (
 				A10000000000000000000050 /* Assets.xcassets in Resources */,
 				A10000000000000000000051 /* AppIcon.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F40000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -258,7 +327,26 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F30000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A20000000000000000000001 /* NetworkPacketTests.swift in Sources */,
+				A20000000000000000000002 /* DeviceManagerTests.swift in Sources */,
+				A20000000000000000000003 /* PairingPersistenceTests.swift in Sources */,
+				A20000000000000000000004 /* NetworkReachabilityTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		G20000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F10000000000000000000001 /* KonnectMac */;
+			targetProxy = G20000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		F70000000000000000000001 /* Debug */ = {
@@ -445,6 +533,38 @@
 			};
 			name = Release;
 		};
+		F80000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.konnectmac.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/KonnectMac.app/Contents/MacOS/KonnectMac";
+			};
+			name = Debug;
+		};
+		F80000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.konnectmac.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/KonnectMac.app/Contents/MacOS/KonnectMac";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -462,6 +582,15 @@
 			buildConfigurations = (
 				F80000000000000000000001 /* Debug */,
 				F80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F20000000000000000000002 /* Build configuration list for PBXNativeTarget "KonnectMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F80000000000000000000003 /* Debug */,
+				F80000000000000000000004 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

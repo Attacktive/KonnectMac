@@ -59,6 +59,12 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 3. **Pair** — your phone appears automatically, click to pair and verify the security key
 4. **Done** — look for the antenna icon in your menu bar
 
+### Discovery and reconnection
+
+KonnectMac uses KDE Connect UDP identity announcements on ports 1714-1764 for LAN discovery. After a successful authenticated pairing, it remembers the device's last known address and advertised listening port. On launch, wake, and network changes, KonnectMac combines normal broadcast discovery with directed identity announcements and direct reconnect attempts for those known devices.
+
+If your network filters broadcast traffic, use **Preferences → Devices → Connect by IP** once to reach the device directly. After the device is authenticated, KonnectMac stores that endpoint for later reconnect attempts. This fallback helps reconnect a known device; it cannot discover an unknown device whose broadcast announcements never reach the Mac.
+
 ### OTP/SMS Visibility (Android 15+)
 
 Android 15 hides sensitive notification content from third-party apps. To enable OTP/SMS visibility for KDE Connect:
@@ -101,6 +107,12 @@ Mac                              Phone
 git clone https://github.com/aryarajsingh/KonnectMac.git
 cd KonnectMac
 xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -configuration Release build
+```
+
+Run the regression suite with:
+
+```bash
+xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -destination 'platform=macOS' test
 ```
 
 <details>

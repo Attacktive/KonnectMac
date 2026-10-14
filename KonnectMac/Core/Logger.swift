@@ -15,5 +15,8 @@ class KLog {
 
     static func log(_ message: String, level: LogLevel = .info) {
         // No-op in stable builds
+#if DEBUG
+        print("[\(level.rawValue)] \(message)")
+#endif
     }
 }
