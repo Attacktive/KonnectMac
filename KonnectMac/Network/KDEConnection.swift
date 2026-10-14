@@ -51,6 +51,7 @@ class KDEConnection {
     var onTLSReady: (() -> Void)?
     var onPacketReceived: ((NetworkPacket) -> Void)?
     var onDisconnected: (() -> Void)?
+    var tlsSetupRunner: ((Bool) -> Bool)?
     // TCP keepalive handles connection liveness — no app-level pings needed
 
     deinit {
@@ -153,6 +154,8 @@ class KDEConnection {
     }
 
     private func connectionLoop() {
+        defer { finishConnectionLoop() }
+
         if !isIncoming {
             // Outgoing: send identity over raw TCP, then TLS
             guard let data = cachedIdentityData else {
@@ -183,10 +186,9 @@ class KDEConnection {
         let isTLSServer = !isIncoming
 
         // Setup TLS
-        guard setupTLS(isServer: isTLSServer) else {
+        let tlsConfigured = tlsSetupRunner?(isTLSServer) ?? setupTLS(isServer: isTLSServer)
+        guard tlsConfigured else {
             KLog.log("[KDEConn] TLS setup failed for \(host)")
-            cleanupSSL()
-            disconnect()
             return
         }
 
@@ -200,8 +202,6 @@ class KDEConnection {
         // and logs failures with the role label.
         KLog.log("[KDEConn] Starting TLS handshake with \(host) (server=\(isTLSServer))")
         guard TLSHelpers.runHandshake(sslContext!, role: "KDEConn") else {
-            cleanupSSL()
-            disconnect()
             return
         }
 
@@ -278,6 +278,9 @@ class KDEConnection {
             }
         }
 
+    }
+
+    private func finishConnectionLoop() {
         _running = false
         // SSLClose must happen BEFORE fd close so TLS close_notify is sent on valid socket
         cleanupSSL()
