@@ -22,6 +22,26 @@ final class PairingPersistenceTests: XCTestCase {
         XCTAssertEqual(second.savedDevicePort(for: "android"), 1716)
     }
 
+	func testObsoleteLocalListeningPortIsRejectedOnLaunch() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		defer { defaults.removePersistentDomain(forName: suiteName) }
+
+		defaults.set(1714, forKey: "tcpPort")
+		let config = Config(defaults: defaults)
+		XCTAssertEqual(config.tcpPort, 1716)
+	}
+
+	func testObsoleteSavedPeerPortIsRejectedOnRelaunch() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		defer { defaults.removePersistentDomain(forName: suiteName) }
+
+		defaults.set(["desktop": 1714], forKey: "pairedDevicePorts")
+		let config = Config(defaults: defaults)
+		XCTAssertNil(config.savedDevicePort(for: "desktop"))
+	}
+
     func testUnpairClearsSavedReconnectEndpoint() throws {
         let suiteName = "KonnectMacTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
