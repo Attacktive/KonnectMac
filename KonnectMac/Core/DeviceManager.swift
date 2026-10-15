@@ -25,6 +25,7 @@ class DeviceManager: ObservableObject {
     private var acceptedConnections = Set<ObjectIdentifier>()
 
     private let udpDiscovery = UDPDiscovery()
+	private let mdnsDiscovery = MDNSDiscovery()
     private let tcpServer = LanServer()
     private var broadcastTimer: Timer?
     private var networkMonitor: NWPathMonitor?
@@ -51,6 +52,31 @@ class DeviceManager: ObservableObject {
         }
 
 		udpDiscovery.startListening(port: Config.defaultPort)
+
+		// Start mDNS discovery
+		mdnsDiscovery.onDeviceDiscovered = { [weak self] host, port, deviceId in
+			guard let self else { return }
+			guard deviceId != Config.shared.deviceId else { return }
+			if self.tlsEstablishedDeviceIds.contains(deviceId) {
+				return
+			}
+
+			if self.connectingDeviceIds.contains(deviceId) {
+				return
+			}
+
+			for (_, conn) in self.connections {
+				if conn.remoteDeviceId == deviceId || conn.host == host {
+					return
+				}
+			}
+
+			let identity = NetworkPacket.identityPacket()
+			KLog.log("[mDNS] Sending directed discovery to \(deviceId) at \(host):\(port)")
+			self.udpDiscovery.sendTo(packet: identity, host: host, port: port)
+		}
+
+		restartMDNSDiscovery()
 
         // Broadcast identity periodically
         broadcastIdentity()
@@ -79,11 +105,12 @@ class DeviceManager: ObservableObject {
 
                     self.disconnectStalePathConnections()
 
-                    if path.status == .satisfied {
-                        self.broadcastIdentity()
-                        self.reconnectPairedDevices()
-                    }
-                }
+					if path.status == .satisfied {
+						self.broadcastIdentity()
+						self.reconnectPairedDevices()
+						self.restartMDNSDiscovery()
+					}
+				}
             }
         }
         networkMonitor?.start(queue: DispatchQueue(label: "network-monitor"))
@@ -97,10 +124,11 @@ class DeviceManager: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 KLog.log("[DeviceManager] System woke from sleep — pruning stale connections and reconnecting")
-                self.disconnectStalePathConnections()
-                self.broadcastIdentity()
-                self.reconnectPairedDevices()
-            }
+				self.disconnectStalePathConnections()
+				self.broadcastIdentity()
+				self.reconnectPairedDevices()
+				self.restartMDNSDiscovery()
+			}
         }
 
         KLog.log("[DeviceManager] Started on port \(Config.shared.tcpPort)")
@@ -122,6 +150,15 @@ class DeviceManager: ObservableObject {
             connectDirectToHost(host: tailscaleIP, port: Config.defaultPort)
         }
     }
+
+	private func restartMDNSDiscovery() {
+		mdnsDiscovery.start(
+			deviceId: Config.shared.deviceId,
+			deviceName: Config.shared.deviceName,
+			deviceType: Config.shared.deviceType,
+			tcpPort: Config.shared.tcpPort
+		)
+	}
 
     /// Actively reconnect to paired devices using their last known IP.
     /// Called on wake and after network changes — don't wait for the phone to hear our broadcast.
@@ -954,6 +991,7 @@ class DeviceManager: ObservableObject {
         // Stop UDP discovery and TCP server
         udpDiscovery.stop()
         tcpServer.stop()
+		mdnsDiscovery.stop()
 
         for (_, conn) in connections {
             conn.disconnect()

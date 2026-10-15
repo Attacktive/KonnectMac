@@ -61,7 +61,7 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 
 ### Discovery and reconnection
 
-KonnectMac sends and receives KDE Connect UDP identity announcements on port 1716 for LAN discovery. TCP connections use ports 1716-1764 independently, so UDP discovery remains on 1716 even when another app occupies the preferred TCP port. Missing peer listening ports default to 1716, and obsolete saved ports below 1716 are ignored.
+KonnectMac uses KDE Connect UDP identity announcements on port 1716 and mDNS (`_kdeconnect._udp.local`) service discovery for LAN discovery. When local Wi-Fi networks filter UDP broadcast packets, mDNS automatically locates nearby devices and triggers direct identity exchange. TCP connections use ports 1716-1764 independently, so discovery remains on 1716 even when another app occupies the preferred TCP port. Missing peer listening ports default to 1716, and obsolete saved ports below 1716 are ignored.
 
 After a successful authenticated pairing, KonnectMac remembers the device's last known address and advertised listening port. On launch, wake, and network changes, it combines normal broadcast discovery with directed identity announcements and direct reconnect attempts for those known devices.
 
