@@ -14,8 +14,14 @@ final class NetworkPacketTests: XCTestCase {
         let data = Data(#"{"id":1,"type":"kdeconnect.identity","body":{"deviceId":"phone"}}"#.utf8)
         let packet = try XCTUnwrap(NetworkPacket.deserialize(from: data))
 
-        XCTAssertEqual(DeviceManager.advertisedTCPPort(from: packet), Config.minPort)
+		XCTAssertEqual(DeviceManager.advertisedTCPPort(from: packet), 1716)
     }
+
+	func testAdvertisedPortBelowProtocolRangeIsRejected() throws {
+		let data = Data(#"{"id":1,"type":"kdeconnect.identity","body":{"deviceId":"phone","tcpPort":1714}}"#.utf8)
+		let packet = try XCTUnwrap(NetworkPacket.deserialize(from: data))
+		XCTAssertNil(DeviceManager.advertisedTCPPort(from: packet))
+	}
 
     func testInvalidAdvertisedPortsAreRejected() throws {
         let outOfRangeData = Data(#"{"id":1,"type":"kdeconnect.identity","body":{"deviceId":"phone","tcpPort":70000}}"#.utf8)

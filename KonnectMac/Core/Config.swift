@@ -6,9 +6,9 @@ import ServiceManagement
 class Config: ObservableObject {
     static let shared = Config()
 
-    static let minPort: UInt16 = 1714
-    static let maxPort: UInt16 = 1764
-    static let defaultPort: UInt16 = 1716
+	nonisolated static let minPort: UInt16 = 1716
+	nonisolated static let maxPort: UInt16 = 1764
+	nonisolated static let defaultPort: UInt16 = 1716
 
     nonisolated(unsafe) let deviceId: String
     @Published var deviceName: String

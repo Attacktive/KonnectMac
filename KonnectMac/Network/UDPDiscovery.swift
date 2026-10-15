@@ -65,26 +65,24 @@ class UDPDiscovery {
         guard let data = packet.serialize() else { return }
 
         let addresses = getBroadcastAddresses() + ["255.255.255.255"]
-        KLog.log("[UDP] Broadcasting to \(addresses) on ports \(Config.minPort)-\(Config.maxPort)")
+		KLog.log("[UDP] Broadcasting to \(addresses) on port \(Config.defaultPort)")
         for addr in addresses {
             var sockAddr = sockaddr_in()
             sockAddr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
             sockAddr.sin_family = sa_family_t(AF_INET)
+			sockAddr.sin_port = Config.defaultPort.bigEndian
             guard inet_pton(AF_INET, addr, &sockAddr.sin_addr) == 1 else {
                 KLog.log("[UDP] inet_pton failed for broadcast address: \(addr)")
                 continue
             }
-            for port in Config.minPort...Config.maxPort {
-                sockAddr.sin_port = UInt16(port).bigEndian
 
-                _ = data.withUnsafeBytes { buf in
-                    withUnsafePointer(to: &sockAddr) { ptr in
-                        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                            sendto(broadcastSocket, buf.baseAddress, data.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                        }
-                    }
-                }
-            }
+			_ = data.withUnsafeBytes { buf in
+				withUnsafePointer(to: &sockAddr) { ptr in
+					ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+						sendto(broadcastSocket, buf.baseAddress, data.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+					}
+				}
+			}
         }
     }
 

@@ -61,7 +61,9 @@ No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + Sw
 
 ### Discovery and reconnection
 
-KonnectMac uses KDE Connect UDP identity announcements on ports 1714-1764 for LAN discovery. After a successful authenticated pairing, it remembers the device's last known address and advertised listening port. On launch, wake, and network changes, KonnectMac combines normal broadcast discovery with directed identity announcements and direct reconnect attempts for those known devices.
+KonnectMac sends and receives KDE Connect UDP identity announcements on port 1716 for LAN discovery. TCP connections use ports 1716-1764 independently, so UDP discovery remains on 1716 even when another app occupies the preferred TCP port. Missing peer listening ports default to 1716, and obsolete saved ports below 1716 are ignored.
+
+After a successful authenticated pairing, KonnectMac remembers the device's last known address and advertised listening port. On launch, wake, and network changes, it combines normal broadcast discovery with directed identity announcements and direct reconnect attempts for those known devices.
 
 If your network filters broadcast traffic, use **Preferences → Devices → Connect by IP** once to reach the device directly. After the device is authenticated, KonnectMac stores that endpoint for later reconnect attempts. This fallback helps reconnect a known device; it cannot discover an unknown device whose broadcast announcements never reach the Mac.
 
@@ -81,7 +83,7 @@ The onboarding wizard covers this as well.
 ```
 Mac                              Phone
  │                                 │
- ├──── UDP Broadcast ────────────► │  Discovery (ports 1714-1764)
+ ├──── UDP Broadcast ────────────► │  Discovery (UDP port 1716)
  │ ◄──── TCP Connect ─────────────┤  Phone connects to Mac
  │                                 │
  ├──── TLS Handshake ────────────► │  Encrypted channel (self-signed certs)
