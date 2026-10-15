@@ -54,7 +54,7 @@ class DeviceManager: ObservableObject {
 		udpDiscovery.startListening(port: Config.defaultPort)
 
 		// Start mDNS discovery
-		mdnsDiscovery.onDeviceDiscovered = { [weak self] host, port, deviceId in
+		mdnsDiscovery.onDeviceDiscovered = { [weak self] host, tcpPort, deviceId in
 			guard let self else { return }
 			guard deviceId != Config.shared.deviceId else { return }
 			if self.tlsEstablishedDeviceIds.contains(deviceId) {
@@ -71,9 +71,10 @@ class DeviceManager: ObservableObject {
 				}
 			}
 
+			let udpPort = Self.targetUDPPort(forDiscoveredPeerTCPPort: tcpPort)
 			let identity = NetworkPacket.identityPacket()
-			KLog.log("[mDNS] Sending directed discovery to \(deviceId) at \(host):\(port)")
-			self.udpDiscovery.sendTo(packet: identity, host: host, port: port)
+			KLog.log("[mDNS] Discovered \(deviceId) at \(host) (TCP: \(tcpPort)); sending directed discovery to UDP \(udpPort)")
+			self.udpDiscovery.sendTo(packet: identity, host: host, port: udpPort)
 		}
 
 		restartMDNSDiscovery()
@@ -158,6 +159,10 @@ class DeviceManager: ObservableObject {
 			deviceType: Config.shared.deviceType,
 			tcpPort: Config.shared.tcpPort
 		)
+	}
+
+	static func targetUDPPort(forDiscoveredPeerTCPPort tcpPort: UInt16) -> UInt16 {
+		Config.defaultPort
 	}
 
     /// Actively reconnect to paired devices using their last known IP.
