@@ -82,4 +82,13 @@ final class DeviceManagerTests: XCTestCase {
         XCTAssertFalse(connection.running)
         XCTAssertEqual(connection.fd, -1)
     }
+
+	func testMDNSDiscoveryTargetsDefaultUDPPortRegardlessOfPeerAdvertisedTCPPort() {
+		let peerTCPPort: UInt16 = 1717
+		let targetUDPPort = DeviceManager.targetUDPPort(forDiscoveredPeerTCPPort: peerTCPPort)
+
+		XCTAssertEqual(targetUDPPort, Config.defaultPort)
+		XCTAssertEqual(targetUDPPort, 1716)
+		XCTAssertNotEqual(targetUDPPort, peerTCPPort)
+	}
 }
