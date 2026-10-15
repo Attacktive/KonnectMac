@@ -25,12 +25,7 @@ class MDNSDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 			port: Int32(tcpPort)
 		)
 
-		let txtDict: [String: String] = [
-			"id": deviceId,
-			"name": deviceName,
-			"type": deviceType,
-			"protocol": "8"
-		]
+		let txtDict = Self.txtRecordDictionary(deviceId: deviceId, deviceName: deviceName, deviceType: deviceType)
 		let dataDict = txtDict.compactMapValues { $0.data(using: .utf8) }
 		advertisingService.setTXTRecord(NetService.data(fromTXTRecord: dataDict))
 		advertisingService.delegate = self
@@ -122,6 +117,15 @@ class MDNSDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 	}
 
 	// MARK: - Helper Methods
+
+	static func txtRecordDictionary(deviceId: String, deviceName: String, deviceType: String) -> [String: String] {
+		[
+			"id": deviceId,
+			"name": deviceName,
+			"type": deviceType,
+			"protocol": String(Config.protocolVersion)
+		]
+	}
 
 	static func parseTXTRecord(_ data: Data?) -> [String: String] {
 		guard let data else { return [:] }

@@ -9,6 +9,7 @@ class Config: ObservableObject {
 	nonisolated static let minPort: UInt16 = 1716
 	nonisolated static let maxPort: UInt16 = 1764
 	nonisolated static let defaultPort: UInt16 = 1716
+	nonisolated static let protocolVersion: Int = 8
 
     nonisolated(unsafe) let deviceId: String
     @Published var deviceName: String

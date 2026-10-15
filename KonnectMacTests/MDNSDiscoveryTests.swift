@@ -45,4 +45,23 @@ final class MDNSDiscoveryTests: XCTestCase {
 		let data = withUnsafeBytes(of: &addr6) { Data($0) }
 		XCTAssertNil(MDNSDiscovery.ipv4Address(from: data))
 	}
+
+	@MainActor
+	func testMDNSTXTProtocolVersionMatchesEmittedIdentityProtocolVersion() {
+		let identityPacket = NetworkPacket.identityPacket()
+		guard let packetProtocol = identityPacket.body["protocolVersion"]?.value as? Int else {
+			XCTFail("Missing protocolVersion in identity packet")
+			return
+		}
+
+		let txt = MDNSDiscovery.txtRecordDictionary(
+			deviceId: "test-device",
+			deviceName: "Test Device",
+			deviceType: "laptop"
+		)
+
+		XCTAssertEqual(txt["protocol"], String(packetProtocol))
+		XCTAssertEqual(packetProtocol, Config.protocolVersion)
+		XCTAssertEqual(Config.protocolVersion, 8)
+	}
 }
