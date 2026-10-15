@@ -50,5 +50,11 @@
             <array/>
         </dict>
     </array>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_kdeconnect._udp</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>KonnectMac uses the local network to discover and communicate with your devices.</string>
 </dict>
 </plist>
