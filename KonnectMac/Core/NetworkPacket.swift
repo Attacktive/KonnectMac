@@ -1,6 +1,8 @@
 import Foundation
 
 struct NetworkPacket: Codable {
+    static let clipboardImagePacketType = "kdeconnect.clipboard.image"
+
     var id: Int64
     var type: String
     var body: [String: AnyCodable]
@@ -60,8 +62,8 @@ struct NetworkPacket: Codable {
             "deviceType": AnyCodable(config.deviceType),
             "protocolVersion": AnyCodable(Config.protocolVersion),
             "tcpPort": AnyCodable(config.tcpPort),
-            "incomingCapabilities": AnyCodable(config.incomingCapabilities),
-            "outgoingCapabilities": AnyCodable(config.outgoingCapabilities)
+            "incomingCapabilities": AnyCodable(addingImageClipboardCapability(to: config.incomingCapabilities)),
+            "outgoingCapabilities": AnyCodable(addingImageClipboardCapability(to: config.outgoingCapabilities))
         ])
     }
 
@@ -69,6 +71,11 @@ struct NetworkPacket: Codable {
         return NetworkPacket(type: "kdeconnect.pair", body: [
             "pair": AnyCodable(pair)
         ])
+    }
+
+    private static func addingImageClipboardCapability(to capabilities: [String]) -> [String] {
+        guard !capabilities.contains(clipboardImagePacketType) else { return capabilities }
+        return capabilities + [clipboardImagePacketType]
     }
 }
 
