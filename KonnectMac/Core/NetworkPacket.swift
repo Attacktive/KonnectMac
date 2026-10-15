@@ -58,7 +58,7 @@ struct NetworkPacket: Codable {
             "deviceId": AnyCodable(config.deviceId),
             "deviceName": AnyCodable(config.deviceName),
             "deviceType": AnyCodable(config.deviceType),
-            "protocolVersion": AnyCodable(7),
+            "protocolVersion": AnyCodable(Config.protocolVersion),
             "tcpPort": AnyCodable(config.tcpPort),
             "incomingCapabilities": AnyCodable(config.incomingCapabilities),
             "outgoingCapabilities": AnyCodable(config.outgoingCapabilities)
