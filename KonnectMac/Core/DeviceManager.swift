@@ -49,7 +49,8 @@ class DeviceManager: ObservableObject {
         udpDiscovery.onIdentityReceived = { [weak self] packet, host in
             self?.handleDiscoveredIdentity(packet: packet, host: host)
         }
-        udpDiscovery.startListening(port: Config.shared.tcpPort)
+
+		udpDiscovery.startListening(port: Config.defaultPort)
 
         // Broadcast identity periodically
         broadcastIdentity()
@@ -111,8 +112,8 @@ class DeviceManager: ObservableObject {
 
         for device in devices.values where Config.shared.isPaired(deviceId: device.id) {
             guard let host = Config.shared.savedDeviceIP(for: device.id), !host.isEmpty else { continue }
-            let port = Config.shared.savedDevicePort(for: device.id) ?? Config.defaultPort
-            udpDiscovery.sendTo(packet: identity, host: host, port: port)
+
+			udpDiscovery.sendTo(packet: identity, host: host, port: Config.defaultPort)
         }
 
         // Direct connect to Tailscale/VPN IP — full KDEConnection, not fire-and-close
@@ -138,7 +139,8 @@ class DeviceManager: ObservableObject {
     }
 
     static func advertisedTCPPort(from packet: NetworkPacket) -> UInt16? {
-        guard let value = packet.body["tcpPort"] else { return Config.minPort }
+		guard let value = packet.body["tcpPort"] else { return Config.defaultPort }
+
         guard let port = value.asPort(), port >= Config.minPort, port <= Config.maxPort else { return nil }
         return port
     }
@@ -375,10 +377,8 @@ class DeviceManager: ObservableObject {
 
     private func sendDirectedIdentity(to host: String) {
         let identity = NetworkPacket.identityPacket()
-        KLog.log("[DirectConnect] Sending directed discovery to \(host) on ports \(Config.minPort)-\(Config.maxPort)")
-        for port in Config.minPort...Config.maxPort {
-            udpDiscovery.sendTo(packet: identity, host: host, port: port)
-        }
+		KLog.log("[DirectConnect] Sending directed discovery to \(host) on port \(Config.defaultPort)")
+		udpDiscovery.sendTo(packet: identity, host: host, port: Config.defaultPort)
     }
 
     /// Connect directly to a host by IP — creates a full KDEConnection with TLS handshake.
