@@ -21,13 +21,13 @@ class Config: ObservableObject {
         }
     }
     @Published var hasCompletedOnboarding: Bool {
-        didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
+        didSet { defaults.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
     }
     @Published var tailscaleIP: String {
-        didSet { UserDefaults.standard.set(tailscaleIP, forKey: "tailscaleIP") }
+        didSet { defaults.set(tailscaleIP, forKey: "tailscaleIP") }
     }
     @Published var downloadDirectory: String {
-        didSet { UserDefaults.standard.set(downloadDirectory, forKey: "downloadDirectory") }
+        didSet { defaults.set(downloadDirectory, forKey: "downloadDirectory") }
     }
 
     let incomingCapabilities: [String] = [
@@ -56,8 +56,12 @@ class Config: ObservableObject {
         "kdeconnect.pair"
     ]
 
-    private init() {
-        let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let pairingDirectoryOverride: URL?
+
+    init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
+        self.defaults = defaults
+        self.pairingDirectoryOverride = pairingDirectory
         self.deviceId = defaults.string(forKey: "deviceId") ?? {
             let id = UUID().uuidString
             defaults.set(id, forKey: "deviceId")
@@ -76,7 +80,6 @@ class Config: ObservableObject {
     }
 
     func save() {
-        let defaults = UserDefaults.standard
         defaults.set(deviceName, forKey: "deviceName")
         defaults.set(Int(tcpPort), forKey: "tcpPort")
     }
@@ -124,52 +127,76 @@ class Config: ObservableObject {
     func removePairedDevice(id: String) {
         let path = pairingPath(for: id)
         try? FileManager.default.removeItem(atPath: path)
-        var names = UserDefaults.standard.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
-        names.removeValue(forKey: id)
-        UserDefaults.standard.set(names, forKey: "pairedDeviceNames")
+        removeDictionaryValue(forKey: "pairedDeviceNames", id: id)
+        removeDictionaryValue(forKey: "pairedDeviceTypes", id: id)
+        removeDictionaryValue(forKey: "pairedDeviceIPs", id: id)
+        removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
     }
 
     func savedDeviceName(for id: String) -> String? {
-        let names = UserDefaults.standard.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
+        let names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
         return names[id]
     }
 
     func saveDeviceName(_ name: String, for id: String) {
-        var names = UserDefaults.standard.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
+        var names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
         names[id] = name
-        UserDefaults.standard.set(names, forKey: "pairedDeviceNames")
+        defaults.set(names, forKey: "pairedDeviceNames")
     }
 
     func saveDeviceType(_ type: String, for id: String) {
-        var types = UserDefaults.standard.dictionary(forKey: "pairedDeviceTypes") as? [String: String] ?? [:]
+        var types = defaults.dictionary(forKey: "pairedDeviceTypes") as? [String: String] ?? [:]
         types[id] = type
-        UserDefaults.standard.set(types, forKey: "pairedDeviceTypes")
+        defaults.set(types, forKey: "pairedDeviceTypes")
     }
 
     func saveDeviceIP(_ ip: String, for id: String) {
-        var ips = UserDefaults.standard.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
+        var ips = defaults.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
         ips[id] = ip
-        UserDefaults.standard.set(ips, forKey: "pairedDeviceIPs")
+        defaults.set(ips, forKey: "pairedDeviceIPs")
     }
 
     func savedDeviceIP(for id: String) -> String? {
-        let ips = UserDefaults.standard.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
+        let ips = defaults.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
         return ips[id]
+    }
+
+    func saveDevicePort(_ port: UInt16, for id: String) {
+        guard port >= Config.minPort && port <= Config.maxPort else { return }
+        var ports = defaults.dictionary(forKey: "pairedDevicePorts") as? [String: Int] ?? [:]
+        ports[id] = Int(port)
+        defaults.set(ports, forKey: "pairedDevicePorts")
+    }
+
+    func savedDevicePort(for id: String) -> UInt16? {
+        let ports = defaults.dictionary(forKey: "pairedDevicePorts") as? [String: Int] ?? [:]
+        guard let rawPort = ports[id], let port = UInt16(exactly: rawPort) else { return nil }
+        guard port >= Config.minPort && port <= Config.maxPort else { return nil }
+        return port
     }
 
     func enabledPlugins(for deviceId: String) -> Set<String> {
         let key = "enabledPlugins_\(deviceId)"
-        if let arr = UserDefaults.standard.array(forKey: key) as? [String] {
+        if let arr = defaults.array(forKey: key) as? [String] {
             return Set(arr)
         }
         return Set(["ping", "battery", "notification", "telephony", "clipboard", "findmyphone", "share"])
     }
 
     func setEnabledPlugins(_ plugins: Set<String>, for deviceId: String) {
-        UserDefaults.standard.set(Array(plugins), forKey: "enabledPlugins_\(deviceId)")
+        defaults.set(Array(plugins), forKey: "enabledPlugins_\(deviceId)")
+    }
+
+    private func removeDictionaryValue(forKey key: String, id: String) {
+        var dictionary = defaults.dictionary(forKey: key) ?? [:]
+        dictionary.removeValue(forKey: id)
+        defaults.set(dictionary, forKey: key)
     }
 
     private func pairingDirectory() -> String {
+        if let pairingDirectoryOverride = pairingDirectoryOverride {
+            return pairingDirectoryOverride.path
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return appSupport.appendingPathComponent("KonnectMac/PairedDevices").path
@@ -247,16 +274,16 @@ class Config: ObservableObject {
         } else {
             removeLaunchAgent()
         }
-        UserDefaults.standard.set(autoStart, forKey: "autoStart")
+        defaults.set(autoStart, forKey: "autoStart")
     }
 
     /// Write the plist to disk if its content differs from what's there, and reload the
     /// job in launchd so the new settings take effect immediately (no reboot required).
     private func writeAndReloadLaunchAgent() {
-        let dir = (FileManager.default.homeDirectoryForCurrentUser.path) + "/Library/LaunchAgents"
+        let dir = FileManager.default.homeDirectoryForCurrentUser.path + "/Library/LaunchAgents"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        let onDisk = (try? String(contentsOfFile: Config.launchAgentPath, encoding: .utf8))
+        let onDisk = try? String(contentsOfFile: Config.launchAgentPath, encoding: .utf8)
         let plistChanged = onDisk != Config.launchAgentPlistContent
 
         if plistChanged {
@@ -292,7 +319,6 @@ class Config: ObservableObject {
             let uid = String(getuid())
             let target = "gui/\(uid)/\(Config.launchAgentLabel)"
             let domain = "gui/\(uid)"
-
             // bootout is idempotent — succeeds or fails benignly if the job isn't loaded.
             // It also terminates the existing launchd-managed instance if one exists,
             // which is fine: we're about to bootstrap a fresh one with the new plist.

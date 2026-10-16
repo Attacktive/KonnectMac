@@ -26,6 +26,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var preferencesCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+
         // Single instance enforcement via lock file (with handoff support for launchd)
         switch acquireLockFile() {
         case .acquired:
@@ -86,6 +90,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+
         // Stop broadcast timer
         DeviceManager.shared.stopServices()
 

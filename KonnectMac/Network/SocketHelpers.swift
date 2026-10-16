@@ -1,6 +1,32 @@
 import Foundation
 import Darwin
 
+struct IPv4InterfaceAddress: Equatable {
+    let address: in_addr_t
+    let netmask: in_addr_t
+
+    init(address: in_addr_t, netmask: in_addr_t) {
+        self.address = address
+        self.netmask = netmask
+    }
+
+    init?(address: String, netmask: String) {
+        var parsedAddress = in_addr()
+        var parsedNetmask = in_addr()
+        guard inet_pton(AF_INET, address, &parsedAddress) == 1,
+            inet_pton(AF_INET, netmask, &parsedNetmask) == 1 else {
+            return nil
+        }
+        self.init(address: parsedAddress.s_addr, netmask: parsedNetmask.s_addr)
+    }
+
+    func contains(_ host: String) -> Bool {
+        var parsedHost = in_addr()
+        guard inet_pton(AF_INET, host, &parsedHost) == 1 else { return false }
+        return (parsedHost.s_addr & netmask) == (address & netmask)
+    }
+}
+
 /// BSD socket configuration helpers shared across KDEConnection, SharePlugin, and
 /// NotificationPlugin.
 ///
@@ -11,6 +37,57 @@ import Darwin
 /// named functions makes it impossible to accidentally route a transfer through the
 /// patient profile (which would hang multi-GB transfers for 2 min on a flaky link).
 enum SocketHelpers {
+    static func activeIPv4Interfaces() -> [IPv4InterfaceAddress] {
+        var interfaces = [IPv4InterfaceAddress]()
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddress = ifaddr else { return interfaces }
+        defer { freeifaddrs(ifaddr) }
+
+        var pointer = firstAddress
+        while true {
+            let interface = pointer.pointee
+            let flags = Int32(interface.ifa_flags)
+            if (flags & IFF_UP) != 0,
+                (flags & IFF_LOOPBACK) == 0,
+                let addressPointer = interface.ifa_addr,
+                let netmaskPointer = interface.ifa_netmask,
+                addressPointer.pointee.sa_family == UInt8(AF_INET),
+                netmaskPointer.pointee.sa_family == UInt8(AF_INET) {
+                let address = addressPointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                    $0.pointee.sin_addr.s_addr
+                }
+                let netmask = netmaskPointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                    $0.pointee.sin_addr.s_addr
+                }
+                interfaces.append(IPv4InterfaceAddress(address: address, netmask: netmask))
+            }
+            guard let next = interface.ifa_next else { break }
+            pointer = next
+        }
+        return interfaces
+    }
+
+    static func localIPv4Address(fd: Int32) -> in_addr_t? {
+        guard fd >= 0 else { return nil }
+
+        var address = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let result = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &length)
+            }
+        }
+        guard result == 0, address.sin_family == UInt8(AF_INET) else { return nil }
+        return address.sin_addr.s_addr
+    }
+
+    static func isIPv4AddressActive(_ address: in_addr_t, on interfaces: [IPv4InterfaceAddress]) -> Bool {
+        interfaces.contains { $0.address == address }
+    }
+
+    static func isIPv4Address(_ host: String, onAny interfaces: [IPv4InterfaceAddress]) -> Bool {
+        interfaces.contains { $0.contains(host) }
+    }
 
     /// Disable Nagle's algorithm so small writes go out immediately. Used on every
     /// active TCP socket — a 200ms-batched write is unacceptable for any of our paths.
