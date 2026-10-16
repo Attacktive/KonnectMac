@@ -101,6 +101,8 @@ enum SocketHelpers {
     /// The 60s idle is intentionally generous so we don't burn battery probing every
     /// few seconds while the user's phone is asleep.
     static func enableControlKeepAlive(fd: Int32) {
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         var keepAlive: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
         var keepIdle: Int32 = 60
@@ -123,6 +125,9 @@ enum SocketHelpers {
     /// (`ioTimeoutSeconds`) bound the actual stall window much tighter.
     static func configureTransferSocket(fd: Int32, ioTimeoutSeconds: Int) {
         enableNoDelay(fd: fd)
+        // TLS close-notify can race the peer closing; return EPIPE instead of terminating the app.
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         var keepAlive: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
         var keepIdle: Int32 = 30

@@ -264,6 +264,23 @@ class CertificateManager {
         let deviceId = Config.shared.deviceId
         let keyPath = NSTemporaryDirectory() + "konnectmac-key.pem"
         let certPath = NSTemporaryDirectory() + "konnectmac-cert.pem"
+        let kdeCertPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences/kdeconnect/certificate.pem").path
+        let kdeKeyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences/kdeconnect/privateKey.pem").path
+        if FileManager.default.fileExists(atPath: kdeCertPath),
+            FileManager.default.fileExists(atPath: kdeKeyPath) {
+            let p12Result = shell(
+                "/usr/bin/openssl", "pkcs12", "-export",
+                "-out", p12Path.path,
+                "-inkey", kdeKeyPath,
+                "-in", kdeCertPath,
+                "-passout", "pass:\(p12Password)"
+            )
+            if p12Result == 0 {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p12Path.path)
+                KLog.log("[Cert] Imported existing KDE Connect certificate into P12 for \(deviceId)")
+                return
+            }
+        }
 
         KLog.log("[Cert] Starting cert generation for device \(deviceId)")
 

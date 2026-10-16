@@ -3,13 +3,14 @@ import Darwin
 import Foundation
 import ImageIO
 import Security
+import UniformTypeIdentifiers
 
 @MainActor
 class ClipboardPlugin: PluginProtocol {
     struct ImageTransferMetadata: Equatable {
         let port: UInt16
         let size: Int
-        let mimeType: String
+        let filename: String
     }
 
     let device: Device
@@ -37,6 +38,7 @@ class ClipboardPlugin: PluginProtocol {
     private static let handshakeTimeout: TimeInterval = 20
     private static let stallTimeout: TimeInterval = 20
     private static let totalTimeout: TimeInterval = 2 * 60
+    private nonisolated static let minPayloadPort: UInt16 = 1739
 
     init(device: Device) {
         self.device = device
@@ -72,11 +74,11 @@ class ClipboardPlugin: PluginProtocol {
     func canHandle(type: String) -> Bool {
         type == "kdeconnect.clipboard"
             || type == "kdeconnect.clipboard.connect"
-            || type == NetworkPacket.clipboardImagePacketType
+            || type == NetworkPacket.clipboardFilePacketType
     }
 
     func handle(packet: NetworkPacket) {
-        if packet.type == NetworkPacket.clipboardImagePacketType {
+        if packet.type == NetworkPacket.clipboardFilePacketType {
             handleImage(packet: packet)
             return
         }
@@ -128,23 +130,35 @@ class ClipboardPlugin: PluginProtocol {
                 return
             }
 
+            guard let png = Self.pngData(from: data) else {
+                KLog.log("[Clipboard] Received \(metadata.filename) was not a decodable image")
+                return
+            }
+
             Task { @MainActor in
-                weakSelf?.applyReceivedImage(data)
+                weakSelf?.applyReceivedImage(png)
             }
         }
     }
 
     static func imageTransferMetadata(from packet: NetworkPacket) -> ImageTransferMetadata? {
-        guard packet.type == NetworkPacket.clipboardImagePacketType else { return nil }
-        guard let mimeType = packet.body["mimeType"]?.value as? String, mimeType == "image/png" else { return nil }
+        guard packet.type == NetworkPacket.clipboardFilePacketType else { return nil }
+        // Upstream peers send every copied file through this packet; only images belong on the pasteboard.
+        guard let filename = packet.body["filename"]?.value as? String,
+            let type = UTType(filenameExtension: (filename as NSString).pathExtension),
+            type.conforms(to: .image) else {
+            return nil
+        }
+
         guard let payloadSize = packet.payloadSize,
             payloadSize > 0,
             payloadSize <= Int64(Self.maxImageBytes),
             let size = Int(exactly: payloadSize) else {
             return nil
         }
+
         guard let port = packet.payloadTransferInfo?["port"]?.asPort(), port > 0 else { return nil }
-        return ImageTransferMetadata(port: port, size: size, mimeType: mimeType)
+        return ImageTransferMetadata(port: port, size: size, filename: filename)
     }
 
     static func incomingCapabilities(from packet: NetworkPacket) -> Set<String> {
@@ -191,7 +205,9 @@ class ClipboardPlugin: PluginProtocol {
         let changeCount = pasteboard.changeCount
         lastChangeCount = changeCount
 
-        if device.peerIncomingCapabilities.contains(NetworkPacket.clipboardImagePacketType) {
+        // A copied file carries its URL, and possibly an icon, but it is not a clipboard image.
+        let hasFileURLs = pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        if !hasFileURLs, device.peerIncomingCapabilities.contains(NetworkPacket.clipboardFilePacketType) {
             if let png = pasteboard.data(forType: .png) {
                 queueOutgoingImage(png)
                 return
@@ -223,7 +239,7 @@ class ClipboardPlugin: PluginProtocol {
     private func convertImageToPNG(_ imageData: Data, pasteboardChangeCount: Int) {
         weak var weakSelf = self
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let png = Self.encodePNG(from: imageData) else {
+            guard let png = Self.pngData(from: imageData) else {
                 KLog.log("[Clipboard] Failed to encode clipboard image as PNG")
                 return
             }
@@ -249,7 +265,7 @@ class ClipboardPlugin: PluginProtocol {
         guard fingerprint != lastReceivedImageFingerprint else { return }
         guard fingerprint != lastSentImageFingerprint else { return }
         guard device.kdeConn != nil else { return }
-        guard device.peerIncomingCapabilities.contains(NetworkPacket.clipboardImagePacketType) else {
+        guard device.peerIncomingCapabilities.contains(NetworkPacket.clipboardFilePacketType) else {
             KLog.log("[Clipboard] Peer \(device.name) does not advertise image clipboard support", level: .debug)
             return
         }
@@ -336,13 +352,19 @@ class ClipboardPlugin: PluginProtocol {
         return (pasteboard.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage)?.tiffRepresentation
     }
 
-    private nonisolated static func encodePNG(from imageData: Data) -> Data? {
+    /// Returns PNG bytes for any decodable image, passing PNG input through without re-encoding.
+    private nonisolated static func pngData(from imageData: Data) -> Data? {
         guard let source = CGImageSourceCreateWithData(imageData as CFData, nil),
             let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             return nil
         }
+
+        if CGImageSourceGetType(source) as String? == UTType.png.identifier {
+            return imageData
+        }
+
         let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else { return nil }
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
@@ -360,39 +382,14 @@ class ClipboardPlugin: PluginProtocol {
         var reuse: Int32 = 1
         setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
 
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = 0
-        addr.sin_addr.s_addr = INADDR_ANY.bigEndian
-
-        let bindResult = withUnsafePointer(to: &addr) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(serverFd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard bindResult == 0 else {
+        guard let port = Self.bindTransferListener(fd: serverFd), listen(serverFd, 1) == 0 else {
             Darwin.close(serverFd)
             return false
         }
 
-        var boundAddr = sockaddr_in()
-        var addrLength = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &boundAddr) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(serverFd, $0, &addrLength)
-            }
-        }
-        let port = UInt16(bigEndian: boundAddr.sin_port)
-
-        guard listen(serverFd, 1) == 0 else {
-            Darwin.close(serverFd)
-            return false
-        }
-
-        var packet = NetworkPacket(type: NetworkPacket.clipboardImagePacketType, body: [
-            "mimeType": AnyCodable("image/png"),
-            "timestamp": AnyCodable(Int64(Date().timeIntervalSince1970 * 1000))
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        var packet = NetworkPacket(type: NetworkPacket.clipboardFilePacketType, body: [
+            "filename": AnyCodable("\(timestamp).png")
         ])
         packet.payloadSize = Int64(data.count)
         packet.payloadTransferInfo = ["port": AnyCodable(Int(port))]
@@ -411,10 +408,15 @@ class ClipboardPlugin: PluginProtocol {
         }
         Darwin.close(serverFd)
 
-        guard clientFd >= 0 else { return false }
+        guard clientFd >= 0 else {
+            KLog.log("[Clipboard] Peer \(deviceName) did not connect to image port \(port) (errno=\(errno))")
+            return false
+        }
+
         SocketHelpers.configureTransferSocket(fd: clientFd, ioTimeoutSeconds: Int(Self.connectTimeout))
 
         guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+            KLog.log("[Clipboard] Could not create fresh TLS identity for image send")
             Darwin.close(clientFd)
             return false
         }
@@ -493,6 +495,8 @@ class ClipboardPlugin: PluginProtocol {
                 continue
             }
 
+            let writeErr = errno
+            KLog.log("[Clipboard] Image send SSLWrite returned \(status) (errno=\(writeErr): \(String(cString: strerror(writeErr)))) at \(totalWritten)/\(data.count) bytes")
             failed = true
             break
         }
@@ -501,6 +505,39 @@ class ClipboardPlugin: PluginProtocol {
         SSLClose(context)
         Darwin.close(clientFd)
         return !failed && totalWritten == data.count
+    }
+
+    private nonisolated static func bindTransferListener(fd: Int32) -> UInt16? {
+        for candidate in Array(Self.minPayloadPort...Config.maxPort) + [0] {
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = candidate.bigEndian
+            addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+
+            let bound = withUnsafePointer(to: &addr) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+
+            guard bound == 0 else { continue }
+            if candidate > 0 {
+                return candidate
+            }
+
+            var boundAddr = sockaddr_in()
+            var addrLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+            _ = withUnsafeMutablePointer(to: &boundAddr) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    getsockname(fd, $0, &addrLength)
+                }
+            }
+
+            return UInt16(bigEndian: boundAddr.sin_port)
+        }
+
+        return nil
     }
 
     private nonisolated static func downloadImage(

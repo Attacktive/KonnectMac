@@ -45,11 +45,15 @@ Existing installations without Sparkle need one manual installation of an update
 |---------|-------------|
 | **Notification Mirroring** | See your phone notifications on your Mac with app icons and OTP auto-detection with one-tap copy |
 | **Call Alerts** | Incoming/outgoing call notifications with automatic media pause and resume |
-| **Clipboard Sync** | Bidirectional clipboard sharing between Mac and phone |
+| **Clipboard Sync** | Bidirectional text sharing; image sharing with KDE Connect desktop peers that advertise `kdeconnect.clipboard.file` |
 | **File Transfer** | Send and receive files over encrypted TLS — drag files to the menu bar icon |
 | **Battery Monitor** | Phone battery level in the menu bar with low battery alerts |
 | **Find My Phone** | Ring your phone from your Mac |
 | **Ping** | Bidirectional ping to test connectivity |
+
+Clipboard images are normalized to PNG and transferred over certificate-pinned TLS.
+Image sync requires support on both peers; text sync remains available with text-only peers, including KDE Connect Android.
+Copy image content rather than a file in Finder; non-image clipboard files are not synced.
 
 ## Setup
 

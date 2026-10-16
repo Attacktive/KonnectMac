@@ -39,6 +39,7 @@ class Config: ObservableObject {
         "kdeconnect.telephony",
         "kdeconnect.clipboard",
         "kdeconnect.clipboard.connect",
+        "kdeconnect.clipboard.file",
         "kdeconnect.findmyphone.request",
         "kdeconnect.share.request",
         "kdeconnect.pair"
@@ -52,6 +53,7 @@ class Config: ObservableObject {
         "kdeconnect.telephony.request_mute",
         "kdeconnect.clipboard",
         "kdeconnect.clipboard.connect",
+        "kdeconnect.clipboard.file",
         "kdeconnect.findmyphone.request",
         "kdeconnect.share.request",
         "kdeconnect.pair"
@@ -63,11 +65,13 @@ class Config: ObservableObject {
     init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
         self.defaults = defaults
         self.pairingDirectoryOverride = pairingDirectory
-        self.deviceId = defaults.string(forKey: "deviceId") ?? {
-            let id = UUID().uuidString
-            defaults.set(id, forKey: "deviceId")
-            return id
-        }()
+        let generatedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let rawId = defaults.string(forKey: "deviceId") ?? generatedId
+        let sanitizedId = rawId.replacingOccurrences(of: "-", with: "").lowercased()
+        if rawId != sanitizedId {
+            defaults.set(sanitizedId, forKey: "deviceId")
+        }
+        self.deviceId = sanitizedId
         self.deviceName = defaults.string(forKey: "deviceName") ?? Host.current().localizedName ?? "Mac"
         let rawPort = defaults.integer(forKey: "tcpPort")
         let parsedPort = UInt16(exactly: rawPort) ?? Config.defaultPort
