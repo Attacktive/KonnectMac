@@ -77,16 +77,60 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertEqual(second.deviceId, first.deviceId)
 	}
 
-	func testExistingPersistedDeviceIdIsPreservedWithoutSanitization() throws {
+	func testLegacyHyphenatedDeviceIdIsMigratedToCompliantId() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
 		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-		defer { defaults.removePersistentDomain(forName: suiteName) }
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+			UUID().uuidString,
+			isDirectory: true
+		)
+		defer {
+			defaults.removePersistentDomain(forName: suiteName)
+			try? FileManager.default.removeItem(at: directory)
+		}
 
-		let existingId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-		defaults.set(existingId, forKey: "deviceId")
+		let legacyId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+		defaults.set(legacyId, forKey: "deviceId")
 
-		let config = Config(defaults: defaults)
-		XCTAssertEqual(config.deviceId, existingId)
-		XCTAssertEqual(defaults.string(forKey: "deviceId"), existingId)
+		let first = Config(defaults: defaults, pairingDirectory: directory)
+		first.saveDeviceName("Android", for: "android")
+		first.saveDeviceIP("172.16.1.42", for: "android")
+		first.saveDevicePort(1716, for: "android")
+
+		defaults.set(legacyId, forKey: "deviceId")
+		let migrated = Config(defaults: defaults, pairingDirectory: directory)
+
+		XCTAssertNotEqual(migrated.deviceId, legacyId)
+		XCTAssertFalse(migrated.deviceId.contains("-"))
+		XCTAssertEqual(migrated.deviceId, migrated.deviceId.lowercased())
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), migrated.deviceId)
+		XCTAssertNil(migrated.savedDeviceName(for: "android"))
+		XCTAssertNil(migrated.savedDeviceIP(for: "android"))
+		XCTAssertNil(migrated.savedDevicePort(for: "android"))
+
+		let second = Config(defaults: defaults, pairingDirectory: directory)
+		XCTAssertEqual(second.deviceId, migrated.deviceId)
+	}
+
+	func testCompliantPersistedDeviceIdIsPreservedWithoutMigration() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+			UUID().uuidString,
+			isDirectory: true
+		)
+		defer {
+			defaults.removePersistentDomain(forName: suiteName)
+			try? FileManager.default.removeItem(at: directory)
+		}
+
+		let compliantId = "740bd4b9b4184ee497d6caf1da8151be"
+		defaults.set(compliantId, forKey: "deviceId")
+
+		let config = Config(defaults: defaults, pairingDirectory: directory)
+		config.saveDeviceName("Android", for: "android")
+		XCTAssertEqual(config.deviceId, compliantId)
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), compliantId)
+		XCTAssertEqual(config.savedDeviceName(for: "android"), "Android")
 	}
 }

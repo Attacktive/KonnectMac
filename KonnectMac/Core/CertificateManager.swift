@@ -49,6 +49,14 @@ class CertificateManager {
         FileManager.default.fileExists(atPath: p12Path.path)
     }
 
+	func resetIdentity() {
+		lock.lock()
+		defer { lock.unlock() }
+
+		cachedIdentity = nil
+		try? FileManager.default.removeItem(at: p12Path)
+	}
+
     /// One-time-per-launch sweep that removes orphaned per-transfer keychains.
     ///
     /// Normally `TransferIdentity.deinit` calls `SecKeychainDelete` which both removes

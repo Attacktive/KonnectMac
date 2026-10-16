@@ -65,8 +65,16 @@ class Config: ObservableObject {
     init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
         self.defaults = defaults
         self.pairingDirectoryOverride = pairingDirectory
+		var needsLegacyMigration = false
 		if let persistedId = defaults.string(forKey: "deviceId") {
-			self.deviceId = persistedId
+			if Self.isLegacyDeviceId(persistedId) {
+				needsLegacyMigration = true
+				let migratedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+				defaults.set(migratedId, forKey: "deviceId")
+				self.deviceId = migratedId
+			} else {
+				self.deviceId = persistedId
+			}
 		} else {
 			let generatedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
 			defaults.set(generatedId, forKey: "deviceId")
@@ -83,6 +91,12 @@ class Config: ObservableObject {
         self.downloadDirectory = defaults.string(forKey: "downloadDirectory")
             ?? (FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")).path
+
+		if needsLegacyMigration {
+			CertificateManager.shared.resetIdentity()
+			clearAllPairedDevices()
+			KLog.log("[Config] Migrated legacy device ID to compliant format; reset identity and pairings for re-pairing")
+		}
     }
 
     func save() {
@@ -138,6 +152,19 @@ class Config: ObservableObject {
         removeDictionaryValue(forKey: "pairedDeviceIPs", id: id)
         removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
     }
+
+	func clearAllPairedDevices() {
+		let dir = pairingDirectory()
+		try? FileManager.default.removeItem(atPath: dir)
+		defaults.removeObject(forKey: "pairedDeviceNames")
+		defaults.removeObject(forKey: "pairedDeviceTypes")
+		defaults.removeObject(forKey: "pairedDeviceIPs")
+		defaults.removeObject(forKey: "pairedDevicePorts")
+	}
+
+	static func isLegacyDeviceId(_ id: String) -> Bool {
+		id.contains("-") || id != id.lowercased()
+	}
 
     func savedDeviceName(for id: String) -> String? {
         let names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]

@@ -199,15 +199,23 @@ class ClipboardPlugin: PluginProtocol {
 		}
 
 		if sanitized.utf8.count > 250 {
-			let ext = (sanitized as NSString).pathExtension
-			let stem = (sanitized as NSString).deletingPathExtension
-			let maxStemBytes = 250 - (ext.isEmpty ? 0 : ext.utf8.count + 1)
-			var truncated = stem
+			var ext = (sanitized as NSString).pathExtension
+			if ext.utf8.count > 200 {
+				while ext.utf8.count > 200 {
+					ext = String(ext.dropLast())
+				}
+			}
+
+			let maxStemBytes = max(1, 250 - (ext.isEmpty ? 0 : ext.utf8.count + 1))
+			var truncated = (sanitized as NSString).deletingPathExtension
 			while truncated.utf8.count > maxStemBytes {
 				truncated = String(truncated.dropLast())
 			}
 
 			sanitized = ext.isEmpty ? truncated : "\(truncated).\(ext)"
+			while sanitized.utf8.count > 250 {
+				sanitized = String(sanitized.dropLast())
+			}
 		}
 
 		return sanitized

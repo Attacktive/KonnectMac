@@ -147,4 +147,24 @@ final class NetworkPacketTests: XCTestCase {
 
 		XCTAssertNil(ClipboardPlugin.fileTransferMetadata(from: packet))
 	}
+
+	func testClipboardFilePacketHandlesOverlongExtensionWithoutLooping() throws {
+		let overlongFilename = "file." + String(repeating: "a", count: 300)
+		var packet = NetworkPacket(
+			type: NetworkPacket.clipboardFilePacketType,
+			body: [
+				"filename": AnyCodable(overlongFilename)
+			]
+		)
+
+		packet.payloadSize = 4096
+		packet.payloadTransferInfo = ["port": AnyCodable(1739)]
+
+		let metadata = try XCTUnwrap(ClipboardPlugin.fileTransferMetadata(from: packet))
+
+		XCTAssertEqual(metadata.port, 1739)
+		XCTAssertEqual(metadata.size, 4096)
+		XCTAssertLessThanOrEqual(metadata.filename.utf8.count, 250)
+		XCTAssertTrue(metadata.filename.hasPrefix("file."))
+	}
 }
