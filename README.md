@@ -53,7 +53,7 @@ Existing installations without Sparkle need one manual installation of an update
 
 Clipboard images are normalized to PNG and transferred over certificate-pinned TLS.
 Image sync requires support on both peers; text sync remains available with text-only peers, including KDE Connect Android.
-Copy image content rather than a file in Finder; non-image clipboard files are not synced.
+Copy image content rather than a file in Finder; inbound clipboard files are staged to temporary storage and applied to the pasteboard.
 
 ## Setup
 

@@ -92,24 +92,32 @@ final class PairingPersistenceTests: XCTestCase {
 		let legacyId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 		defaults.set(legacyId, forKey: "deviceId")
 
-		let first = Config(defaults: defaults, pairingDirectory: directory)
-		first.saveDeviceName("Android", for: "android")
-		first.saveDeviceIP("172.16.1.42", for: "android")
-		first.saveDevicePort(1716, for: "android")
+		let config = Config(defaults: defaults, pairingDirectory: directory)
+		config.saveDeviceName("Android", for: "android")
+		config.saveDeviceIP("172.16.1.42", for: "android")
+		config.saveDevicePort(1716, for: "android")
 
-		defaults.set(legacyId, forKey: "deviceId")
-		let migrated = Config(defaults: defaults, pairingDirectory: directory)
+		// Constructing a Config must not destroy anything; only the explicit launch-time migration may.
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), legacyId)
+		XCTAssertEqual(config.savedDeviceName(for: "android"), "Android")
 
-		XCTAssertNotEqual(migrated.deviceId, legacyId)
-		XCTAssertFalse(migrated.deviceId.contains("-"))
-		XCTAssertEqual(migrated.deviceId, migrated.deviceId.lowercased())
-		XCTAssertEqual(defaults.string(forKey: "deviceId"), migrated.deviceId)
-		XCTAssertNil(migrated.savedDeviceName(for: "android"))
-		XCTAssertNil(migrated.savedDeviceIP(for: "android"))
-		XCTAssertNil(migrated.savedDevicePort(for: "android"))
+		var identityResets = 0
+		config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+		config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
 
-		let second = Config(defaults: defaults, pairingDirectory: directory)
-		XCTAssertEqual(second.deviceId, migrated.deviceId)
+		XCTAssertEqual(identityResets, 1)
+		XCTAssertNotEqual(config.deviceId, legacyId)
+		XCTAssertFalse(config.deviceId.contains("-"))
+		XCTAssertEqual(config.deviceId, config.deviceId.lowercased())
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), config.deviceId)
+		XCTAssertNil(config.savedDeviceName(for: "android"))
+		XCTAssertNil(config.savedDeviceIP(for: "android"))
+		XCTAssertNil(config.savedDevicePort(for: "android"))
+
+		let relaunched = Config(defaults: defaults, pairingDirectory: directory)
+		relaunched.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+		XCTAssertEqual(relaunched.deviceId, config.deviceId)
+		XCTAssertEqual(identityResets, 1)
 	}
 
 	func testCompliantPersistedDeviceIdIsPreservedWithoutMigration() throws {

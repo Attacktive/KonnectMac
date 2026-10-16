@@ -96,13 +96,18 @@ enum SocketHelpers {
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
     }
 
+	/// Suppress SIGPIPE on this socket so a closed peer returns EPIPE rather than terminating the process.
+	static func disableSigPipe(fd: Int32) {
+		var noSigPipe: Int32 = 1
+		setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+	}
+
     /// Keepalive profile for the long-lived KDEConnection control channel.
     /// Probes after 60s of idle, every 15s, 4 retries → ~2 min to detect a dead peer.
     /// The 60s idle is intentionally generous so we don't burn battery probing every
     /// few seconds while the user's phone is asleep.
     static func enableControlKeepAlive(fd: Int32) {
-        var noSigPipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+		disableSigPipe(fd: fd)
         var keepAlive: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
         var keepIdle: Int32 = 60
@@ -125,9 +130,8 @@ enum SocketHelpers {
     /// (`ioTimeoutSeconds`) bound the actual stall window much tighter.
     static func configureTransferSocket(fd: Int32, ioTimeoutSeconds: Int) {
         enableNoDelay(fd: fd)
-        // TLS close-notify can race the peer closing; return EPIPE instead of terminating the app.
-        var noSigPipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+		// TLS close-notify can race the peer closing; return EPIPE instead of terminating the app.
+		disableSigPipe(fd: fd)
         var keepAlive: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, socklen_t(MemoryLayout<Int32>.size))
         var keepIdle: Int32 = 30

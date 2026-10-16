@@ -168,4 +168,168 @@ enum TLSHelpers {
         let certs = SecTrustCopyCertificateChain(peerTrust) as? [SecCertificate]
         return certs?.first
     }
+
+	/// Connects to a remote TLS endpoint, verifies the peer certificate, and streams the payload into destURL.
+	/// Uses throwing FileHandle writes to prevent uncaught Objective-C exceptions on ENOSPC.
+	/// Returns the number of bytes written, or nil if connect, handshake, or certificate verification failed.
+	static func downloadPayloadFile(
+		host: String,
+		port: UInt16,
+		expectedSize: Int64,
+		destURL: URL,
+		storedCertData: Data?,
+		role: String,
+		filePermissions: Int? = nil,
+		connectTimeout: TimeInterval = 15,
+		handshakeTimeout: TimeInterval = 20,
+		stallTimeout: TimeInterval = 20,
+		totalTimeout: TimeInterval = 120,
+		chunkSize: Int = 65536,
+		onProgress: ((_ totalRead: Int64) -> Void)? = nil
+	) -> Int64? {
+		let fd = socket(AF_INET, SOCK_STREAM, 0)
+		guard fd >= 0 else {
+			KLog.log("[\(role)] Socket creation failed: errno=\(errno)")
+			return nil
+		}
+
+		var addr = sockaddr_in()
+		addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+		addr.sin_family = sa_family_t(AF_INET)
+		addr.sin_port = port.bigEndian
+		guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else {
+			KLog.log("[\(role)] Invalid host IP: \(host)", level: .error)
+			Darwin.close(fd)
+			return nil
+		}
+
+		var connTimeout = timeval(tv_sec: __darwin_time_t(connectTimeout), tv_usec: 0)
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &connTimeout, socklen_t(MemoryLayout<timeval>.size))
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+		let connectResult = withUnsafePointer(to: &addr) { pointer in
+			pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+				Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+			}
+		}
+		guard connectResult == 0 else {
+			KLog.log("[\(role)] Connect to \(host):\(port) failed: errno=\(errno)")
+			Darwin.close(fd)
+			return nil
+		}
+
+		SocketHelpers.configureTransferSocket(fd: fd, ioTimeoutSeconds: Int(connectTimeout))
+
+		guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+			KLog.log("[\(role)] Could not create fresh transfer identity")
+			Darwin.close(fd)
+			return nil
+		}
+
+		return withExtendedLifetime(transferId) {
+			guard let context = SSLCreateContext(nil, .clientSide, .streamType) else {
+				KLog.log("[\(role)] SSLCreateContext failed")
+				Darwin.close(fd)
+				return nil
+			}
+
+			let fdPointer = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+			defer { fdPointer.deallocate() }
+			fdPointer.pointee = fd
+			configure(context, TLSContextConfig(isServer: false, identity: transferId.identity, fdPtr: fdPointer))
+
+			guard runHandshake(context, role: role, deadline: handshakeTimeout) else {
+				SSLClose(context)
+				Darwin.close(fd)
+				return nil
+			}
+
+			if let storedCert = storedCertData, storedCert.count > 1 {
+				guard let peerCert = copyPeerLeafCertificate(context),
+					  (SecCertificateCopyData(peerCert) as Data) == storedCert else {
+					KLog.log("[\(role)] Peer cert mismatch — rejecting")
+					SSLClose(context)
+					Darwin.close(fd)
+					return nil
+				}
+			}
+
+			let fileAttributes: [FileAttributeKey: Any]? = filePermissions.map { [.posixPermissions: $0] }
+			guard FileManager.default.createFile(atPath: destURL.path, contents: nil, attributes: fileAttributes) else {
+				KLog.log("[\(role)] Failed to create output file: \(destURL.path)", level: .error)
+				SSLClose(context)
+				Darwin.close(fd)
+				return nil
+			}
+
+			guard let fileHandle = try? FileHandle(forWritingTo: destURL) else {
+				KLog.log("[\(role)] Failed to open output file for writing: \(destURL.path)", level: .error)
+				SSLClose(context)
+				Darwin.close(fd)
+				return nil
+			}
+
+			defer { try? fileHandle.close() }
+
+			let started = Date()
+			var totalRead: Int64 = 0
+			var buffer = [UInt8](repeating: 0, count: chunkSize)
+			var lastProgress = Date()
+
+			readLoop: while totalRead < expectedSize {
+				if Date().timeIntervalSince(started) > totalTimeout {
+					KLog.log("[\(role)] Transfer exceeded total timeout at \(totalRead)/\(expectedSize) bytes")
+					break
+				}
+
+				var bytesRead = 0
+				let toRead = min(buffer.count, Int(expectedSize - totalRead))
+				let status = SSLRead(context, &buffer, toRead, &bytesRead)
+
+				if bytesRead > 0 {
+					do {
+						try fileHandle.write(contentsOf: Data(buffer[0..<bytesRead]))
+					} catch {
+						KLog.log("[\(role)] File write failed: \(error)", level: .error)
+						break readLoop
+					}
+
+					totalRead += Int64(bytesRead)
+					lastProgress = Date()
+					onProgress?(totalRead)
+				}
+
+				switch status {
+				case errSecSuccess:
+					if bytesRead == 0 {
+						KLog.log("[\(role)] EOF at \(totalRead)/\(expectedSize) bytes")
+						break readLoop
+					}
+					continue
+
+				case errSSLWouldBlock:
+					if Date().timeIntervalSince(lastProgress) > stallTimeout {
+						KLog.log("[\(role)] Stall timeout at \(totalRead)/\(expectedSize) bytes")
+						break readLoop
+					}
+					if bytesRead == 0 { usleep(5000) }
+					continue
+
+				case errSSLClosedGraceful, errSSLClosedAbort:
+					if totalRead < expectedSize {
+						KLog.log("[\(role)] Peer closed early at \(totalRead)/\(expectedSize) bytes")
+					}
+					break readLoop
+
+				default:
+					KLog.log("[\(role)] SSLRead returned status \(status) at \(totalRead)/\(expectedSize) bytes")
+					break readLoop
+				}
+			}
+
+			SSLClose(context)
+			Darwin.close(fd)
+			return totalRead
+		}
+	}
 }

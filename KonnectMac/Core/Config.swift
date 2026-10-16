@@ -12,6 +12,7 @@ class Config: ObservableObject {
 	nonisolated static let protocolVersion: Int = 8
 
     nonisolated(unsafe) let deviceId: String
+	private var needsLegacyDeviceIdMigration = false
     @Published var deviceName: String
     @Published var deviceType: String = "laptop"
     @Published var tcpPort: UInt16
@@ -65,18 +66,16 @@ class Config: ObservableObject {
     init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
         self.defaults = defaults
         self.pairingDirectoryOverride = pairingDirectory
-		var needsLegacyMigration = false
 		if let persistedId = defaults.string(forKey: "deviceId") {
 			if Self.isLegacyDeviceId(persistedId) {
-				needsLegacyMigration = true
-				let migratedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-				defaults.set(migratedId, forKey: "deviceId")
-				self.deviceId = migratedId
+				// Persisted only by migrateLegacyDeviceIdIfNeeded, after the identity and pairings bound to the old ID are gone.
+				self.deviceId = Self.generateDeviceId()
+				self.needsLegacyDeviceIdMigration = true
 			} else {
 				self.deviceId = persistedId
 			}
 		} else {
-			let generatedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+			let generatedId = Self.generateDeviceId()
 			defaults.set(generatedId, forKey: "deviceId")
 			self.deviceId = generatedId
 		}
@@ -91,12 +90,20 @@ class Config: ObservableObject {
         self.downloadDirectory = defaults.string(forKey: "downloadDirectory")
             ?? (FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")).path
+    }
 
-		if needsLegacyMigration {
-			CertificateManager.shared.resetIdentity()
-			clearAllPairedDevices()
-			KLog.log("[Config] Migrated legacy device ID to compliant format; reset identity and pairings for re-pairing")
+	/// Replaces a pre-compliance device ID, which KDE Connect peers reject during TLS hostname verification.
+	/// The certificate CN and every peer's trust are bound to the old ID, so both are discarded before the new ID is persisted; a crash midway retries on the next launch.
+	func migrateLegacyDeviceIdIfNeeded(resetIdentity: () -> Void) {
+		guard needsLegacyDeviceIdMigration else {
+			return
 		}
+
+		resetIdentity()
+		clearAllPairedDevices()
+		defaults.set(deviceId, forKey: "deviceId")
+		needsLegacyDeviceIdMigration = false
+		KLog.log("[Config] Migrated legacy device ID to compliant format; reset identity and pairings for re-pairing")
     }
 
     func save() {
@@ -153,7 +160,7 @@ class Config: ObservableObject {
         removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
     }
 
-	func clearAllPairedDevices() {
+	private func clearAllPairedDevices() {
 		let dir = pairingDirectory()
 		try? FileManager.default.removeItem(atPath: dir)
 		defaults.removeObject(forKey: "pairedDeviceNames")
@@ -162,8 +169,12 @@ class Config: ObservableObject {
 		defaults.removeObject(forKey: "pairedDevicePorts")
 	}
 
-	static func isLegacyDeviceId(_ id: String) -> Bool {
+	private static func isLegacyDeviceId(_ id: String) -> Bool {
 		id.contains("-") || id != id.lowercased()
+	}
+
+	private static func generateDeviceId() -> String {
+		UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
 	}
 
     func savedDeviceName(for id: String) -> String? {

@@ -129,7 +129,7 @@ final class NetworkPacketTests: XCTestCase {
 			]
 		)
 
-		packet.payloadSize = 3 * 1024 * 1024 * 1024
+		packet.payloadSize = 51 * 1024 * 1024
 		packet.payloadTransferInfo = ["port": AnyCodable(1739)]
 
 		XCTAssertNil(ClipboardPlugin.fileTransferMetadata(from: packet))
@@ -166,5 +166,33 @@ final class NetworkPacketTests: XCTestCase {
 		XCTAssertEqual(metadata.size, 4096)
 		XCTAssertLessThanOrEqual(metadata.filename.utf8.count, 250)
 		XCTAssertTrue(metadata.filename.hasPrefix("file."))
+	}
+
+	func testExtractImagePayloadRejectsNonImageFiles() throws {
+		let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("report.pdf")
+		try "dummy-pdf-content".write(to: tempURL, atomically: true, encoding: .utf8)
+		defer { try? FileManager.default.removeItem(at: tempURL) }
+
+		XCTAssertNil(ClipboardPlugin.extractImagePayload(from: tempURL))
+	}
+
+	func testCleanupStaleTransferDirectoriesRemovesOlderDirectories() throws {
+		let baseDir = FileManager.default.temporaryDirectory.appendingPathComponent("KonnectMacClipboard", isDirectory: true)
+		let oldDir = baseDir.appendingPathComponent("test-old-\(UUID().uuidString)", isDirectory: true)
+		let freshDir = baseDir.appendingPathComponent("test-fresh-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: oldDir, withIntermediateDirectories: true)
+		try FileManager.default.createDirectory(at: freshDir, withIntermediateDirectories: true)
+		defer {
+			try? FileManager.default.removeItem(at: oldDir)
+			try? FileManager.default.removeItem(at: freshDir)
+		}
+
+		let twoDaysAgo = Date().addingTimeInterval(-2 * 24 * 60 * 60)
+		try FileManager.default.setAttributes([.modificationDate: twoDaysAgo], ofItemAtPath: oldDir.path)
+
+		ClipboardPlugin.cleanupStaleTransferDirectories()
+
+		XCTAssertFalse(FileManager.default.fileExists(atPath: oldDir.path))
+		XCTAssertTrue(FileManager.default.fileExists(atPath: freshDir.path))
 	}
 }

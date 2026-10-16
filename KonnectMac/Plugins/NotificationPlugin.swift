@@ -406,6 +406,7 @@ class NotificationPlugin: PluginProtocol {
         guard fd >= 0 else { return nil }
 
         SocketHelpers.enableNoDelay(fd: fd)
+		SocketHelpers.disableSigPipe(fd: fd)
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)

@@ -592,173 +592,34 @@ class SharePlugin: PluginProtocol {
         return 0
     }
 
-    /// One attempt at the download. Returns total bytes written. Returns 0 if connect
-    /// or TLS handshake failed; the retry wrapper will try again.
-    private nonisolated func downloadFileStreamingOnce(host: String, port: UInt16, expectedSize: Int, destURL: URL, storedCertData: Data?, attempt: Int) -> Int {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else {
-            KLog.log("[Share] Socket creation failed: errno=\(errno)")
-            return 0
-        }
+	/// One attempt at the download. Returns total bytes written. Returns 0 if connect
+	/// or TLS handshake failed; the retry wrapper will try again.
+	private nonisolated func downloadFileStreamingOnce(host: String, port: UInt16, expectedSize: Int, destURL: URL, storedCertData: Data?, attempt: Int) -> Int {
+		let totalReceived = TLSHelpers.downloadPayloadFile(
+			host: host,
+			port: port,
+			expectedSize: Int64(expectedSize),
+			destURL: destURL,
+			storedCertData: storedCertData,
+			role: "Share recv",
+			connectTimeout: 15,
+			handshakeTimeout: Self.handshakeTimeout,
+			stallTimeout: Self.stallTimeout,
+			totalTimeout: Self.totalTimeout,
+			chunkSize: Self.chunkSize,
+			onProgress: { totalRead in
+				if expectedSize > 5_000_000 {
+					let pct = totalRead * 100 / Int64(expectedSize)
+					let prevPct = max(0, totalRead - Int64(Self.chunkSize)) * 100 / Int64(expectedSize)
+					if pct / 5 != prevPct / 5 {
+						KLog.log("[Share] Recv \(pct)% (\(totalRead)/\(expectedSize) bytes)")
+					}
+				}
+			}
+		)
 
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else {
-            KLog.log("[Share] Invalid host IP: \(host)", level: .error)
-            Darwin.close(fd)
-            return 0
-        }
-
-        // Connect timeout — separate from per-I/O timeout so we fail fast if phone is unreachable
-        var connectTimeout = timeval(tv_sec: 15, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
-
-        let result = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard result == 0 else {
-            KLog.log("[Share] Connect to \(host):\(port) failed: errno=\(errno)")
-            Darwin.close(fd)
-            return 0
-        }
-
-        // Switch to data-transfer socket options (KEEPALIVE + per-I/O timeouts)
-        SocketHelpers.configureTransferSocket(fd: fd, ioTimeoutSeconds: Int(Self.socketIOTimeout))
-
-        // Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity
-        // doc in CertificateManager. The cached identity is shared with KDEConnection's
-        // long-lived TLS context and accumulates state in SecureTransport that breaks
-        // every short-lived handshake after the first 5–7 attempts.
-        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
-            KLog.log("[Share] Could not create transfer identity for receive")
-            Darwin.close(fd)
-            return 0
-        }
-        // withExtendedLifetime keeps the keychain alive until SSLClose has been called
-        // and the SSLContext has actually let go of its cert/key references.
-        return withExtendedLifetime(transferId) { () -> Int in
-            self.downloadFileStreamingTLS(
-                fd: fd,
-                identity: transferId.identity,
-                expectedSize: expectedSize,
-                destURL: destURL,
-                storedCertData: storedCertData
-            )
-        }
-    }
-
-    private nonisolated func downloadFileStreamingTLS(fd: Int32, identity: SecIdentity, expectedSize: Int, destURL: URL, storedCertData: Data?) -> Int {
-        guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
-            KLog.log("[Share] SSLCreateContext failed")
-            Darwin.close(fd)
-            return 0
-        }
-        let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        defer { fdPtr.deallocate() }
-        fdPtr.pointee = fd
-        TLSHelpers.configure(ctx, TLSContextConfig(isServer: false, identity: identity, fdPtr: fdPtr))
-
-        guard TLSHelpers.runHandshake(ctx, role: "Share recv", deadline: Self.handshakeTimeout) else {
-            SSLClose(ctx); Darwin.close(fd)
-            return 0
-        }
-
-        // Validate peer certificate matches the paired device
-        if let storedCert = storedCertData, storedCert.count > 1 {
-            if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
-                KLog.log("[Share] File download peer cert mismatch — rejecting")
-                SSLClose(ctx); Darwin.close(fd)
-                return 0
-            }
-        }
-
-        // Create file and open FileHandle for streaming writes
-        guard FileManager.default.createFile(atPath: destURL.path, contents: nil) else {
-            KLog.log("[Share] Failed to create output file: \(destURL.path)", level: .error)
-            SSLClose(ctx); Darwin.close(fd)
-            return 0
-        }
-        guard let fileHandle = try? FileHandle(forWritingTo: destURL) else {
-            KLog.log("[Share] Failed to open output file for writing: \(destURL.path)", level: .error)
-            SSLClose(ctx); Darwin.close(fd)
-            return 0
-        }
-        defer { try? fileHandle.close() }
-
-        let started = Date()
-        var totalReceived = 0
-        var buffer = [UInt8](repeating: 0, count: Self.chunkSize)
-        var lastProgress = Date()
-
-        readLoop: while totalReceived < expectedSize {
-            if Date().timeIntervalSince(started) > Self.totalTimeout {
-                KLog.log("[Share] Receive exceeded total timeout at \(totalReceived)/\(expectedSize) bytes")
-                break
-            }
-
-            var bytesRead = 0
-            let toRead = min(buffer.count, expectedSize - totalReceived)
-            let readStatus = SSLRead(ctx, &buffer, toRead, &bytesRead)
-
-            // Always consume any data we got — partial reads with errSSLWouldBlock are normal
-            if bytesRead > 0 {
-                fileHandle.write(Data(buffer[0..<bytesRead]))
-                totalReceived += bytesRead
-                lastProgress = Date()
-
-                if expectedSize > 5_000_000 {
-                    let pct = totalReceived * 100 / expectedSize
-                    let prevPct = (totalReceived - bytesRead) * 100 / expectedSize
-                    if pct / 5 != prevPct / 5 {
-                        KLog.log("[Share] Recv \(pct)% (\(totalReceived)/\(expectedSize) bytes)")
-                    }
-                }
-            }
-
-            switch readStatus {
-            case errSecSuccess:
-                if bytesRead == 0 {
-                    // Clean EOF before expected size — peer ended early
-                    KLog.log("[Share] EOF at \(totalReceived)/\(expectedSize) bytes")
-                    break readLoop
-                }
-                // Got data — try again immediately for more
-                continue
-
-            case errSSLClosedGraceful, errSSLClosedAbort:
-                if totalReceived < expectedSize {
-                    KLog.log("[Share] Peer closed at \(totalReceived)/\(expectedSize) bytes")
-                }
-                break readLoop
-
-            case errSSLWouldBlock:
-                if Date().timeIntervalSince(lastProgress) > Self.stallTimeout {
-                    KLog.log("[Share] No progress for \(Int(Self.stallTimeout))s at \(totalReceived)/\(expectedSize) bytes")
-                    break readLoop
-                }
-                // If we made progress this iteration, retry immediately; otherwise back off briefly
-                if bytesRead == 0 { usleep(5000) }
-                continue
-
-            default:
-                KLog.log("[Share] SSLRead error \(readStatus) at \(totalReceived)/\(expectedSize) bytes")
-                break readLoop
-            }
-        }
-
-        SSLClose(ctx)
-        Darwin.close(fd)
-
-        let elapsed = Date().timeIntervalSince(started)
-        let mbps = elapsed > 0 ? Double(totalReceived) / elapsed / 1_000_000 : 0
-        KLog.log("[Share] Received \(totalReceived)/\(expectedSize) bytes in \(String(format: "%.1f", elapsed))s (\(String(format: "%.1f", mbps)) MB/s)")
-        return totalReceived
-    }
+		return Int(totalReceived ?? 0)
+	}
 
     // MARK: - Notifications
 

@@ -53,6 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return
         }
 
+		// After the single-instance lock, so only one process ever rewrites the identity, and before anything reads it.
+		Config.shared.migrateLegacyDeviceIdIfNeeded(resetIdentity: CertificateManager.shared.resetIdentity)
+
 		AppDelegate.instance = self
 
 		UpdaterViewModel.shared.start()
@@ -75,6 +78,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // We do this AT STARTUP rather than per-transfer because writing to the
         // global search list many times per second is what crashed v1.8.
         CertificateManager.shared.cleanupOrphanedTransferKeychains()
+		ClipboardPlugin.cleanupStaleTransferDirectories()
 
         Config.shared.syncLoginItemStatus()
 

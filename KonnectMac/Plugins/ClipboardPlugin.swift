@@ -32,8 +32,9 @@ class ClipboardPlugin: PluginProtocol {
 
 	private static let maxTextBytes = 131072
 	private static let maxImageBytes = 25 * 1024 * 1024
-	private static let maxFileBytes: Int64 = 2_147_483_648
+	private static let maxFileBytes: Int64 = 50 * 1024 * 1024
 	private static let chunkSize = 65536
+	private static var lastReceivedTransferDirectory: URL?
 	private static let acceptTimeout: TimeInterval = 20
     private static let connectTimeout: TimeInterval = 15
     private static let handshakeTimeout: TimeInterval = 20
@@ -41,6 +42,20 @@ class ClipboardPlugin: PluginProtocol {
     private static let totalTimeout: TimeInterval = 2 * 60
     private nonisolated static let minPayloadPort: UInt16 = 1739
 
+
+	/// Removes clipboard transfer staging directories older than 24 hours left by previous sessions.
+	static func cleanupStaleTransferDirectories() {
+		let baseDir = FileManager.default.temporaryDirectory.appendingPathComponent("KonnectMacClipboard", isDirectory: true)
+		guard let entries = try? FileManager.default.contentsOfDirectory(at: baseDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+		let oneDayAgo = Date().addingTimeInterval(-24 * 60 * 60)
+		for dir in entries {
+			if let values = try? dir.resourceValues(forKeys: [.contentModificationDateKey]),
+			   let modDate = values.contentModificationDate,
+			   modDate < oneDayAgo {
+				try? FileManager.default.removeItem(at: dir)
+			}
+		}
+	}
     init(device: Device) {
         self.device = device
     }
@@ -146,15 +161,16 @@ class ClipboardPlugin: PluginProtocol {
 				destURL: destURL,
 				storedCertData: storedCert
 			)
-
 			guard success else {
 				KLog.log("[Clipboard] File receive failed from \(host):\(metadata.port)")
 				try? FileManager.default.removeItem(at: transferDir)
 				return
 			}
 
+			let imagePayload = Self.extractImagePayload(from: destURL)
+
 			Task { @MainActor in
-				weakSelf?.applyReceivedFile(at: destURL)
+				weakSelf?.applyReceivedFile(at: destURL, transferDir: transferDir, imagePayload: imagePayload)
 			}
 		}
 	}
@@ -200,10 +216,8 @@ class ClipboardPlugin: PluginProtocol {
 
 		if sanitized.utf8.count > 250 {
 			var ext = (sanitized as NSString).pathExtension
-			if ext.utf8.count > 200 {
-				while ext.utf8.count > 200 {
-					ext = String(ext.dropLast())
-				}
+			while ext.utf8.count > 200 {
+				ext = String(ext.dropLast())
 			}
 
 			let maxStemBytes = max(1, 250 - (ext.isEmpty ? 0 : ext.utf8.count + 1))
@@ -213,9 +227,6 @@ class ClipboardPlugin: PluginProtocol {
 			}
 
 			sanitized = ext.isEmpty ? truncated : "\(truncated).\(ext)"
-			while sanitized.utf8.count > 250 {
-				sanitized = String(sanitized.dropLast())
-			}
 		}
 
 		return sanitized
@@ -378,7 +389,7 @@ class ClipboardPlugin: PluginProtocol {
         }
     }
 
-	private func applyReceivedFile(at fileURL: URL) {
+	private func applyReceivedFile(at fileURL: URL, transferDir: URL, imagePayload: ReceivedImagePayload?) {
 		lastSentContent = ""
 		lastReceivedContent = ""
 
@@ -386,18 +397,13 @@ class ClipboardPlugin: PluginProtocol {
 		pasteboard.clearContents()
 
 		var didWrite = false
-		if let image = NSImage(contentsOf: fileURL) {
-			if let fileData = try? Data(contentsOf: fileURL),
-				let png = Self.pngData(from: fileData) {
-				if pasteboard.setData(png, forType: .png) {
-					didWrite = true
-				}
+		if let imagePayload = imagePayload {
+			if pasteboard.setData(imagePayload.pngData, forType: .png) {
+				didWrite = true
 			}
 
-			if let tiff = image.tiffRepresentation {
-				if pasteboard.setData(tiff, forType: .tiff) {
-					didWrite = true
-				}
+			if let tiff = imagePayload.tiffData, pasteboard.setData(tiff, forType: .tiff) {
+				didWrite = true
 			}
 		}
 
@@ -407,13 +413,51 @@ class ClipboardPlugin: PluginProtocol {
 
 		guard didWrite else {
 			KLog.log("[Clipboard] Failed to write received clipboard file to pasteboard", level: .error)
+			try? FileManager.default.removeItem(at: transferDir)
 			return
 		}
 
+		if let previousDir = Self.lastReceivedTransferDirectory, previousDir != transferDir {
+			try? FileManager.default.removeItem(at: previousDir)
+		}
+		Self.lastReceivedTransferDirectory = transferDir
+
 		lastSentImageFingerprint = nil
-		lastReceivedImageFingerprint = (try? Data(contentsOf: fileURL))?.hashValue
+		lastReceivedImageFingerprint = imagePayload?.pngData.hashValue
 		lastChangeCount = pasteboard.changeCount
 		KLog.log("[Clipboard] Received clipboard file from \(device.name): \(fileURL.lastPathComponent)")
+	}
+
+	struct ReceivedImagePayload {
+		let pngData: Data
+		let tiffData: Data?
+	}
+
+	nonisolated static func extractImagePayload(from fileURL: URL) -> ReceivedImagePayload? {
+		let ext = fileURL.pathExtension
+		guard !ext.isEmpty else { return nil }
+		guard let utType = UTType(filenameExtension: ext), utType.conforms(to: .image) else {
+			return nil
+		}
+
+		guard let fileData = try? Data(contentsOf: fileURL),
+			  let png = pngData(from: fileData) else {
+			return nil
+		}
+
+		var tiff: Data?
+		if let source = CGImageSourceCreateWithData(png as CFData, nil),
+		   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+			let output = NSMutableData()
+			if let destination = CGImageDestinationCreateWithData(output, UTType.tiff.identifier as CFString, 1, nil) {
+				CGImageDestinationAddImage(destination, image, nil)
+				if CGImageDestinationFinalize(destination) {
+					tiff = output as Data
+				}
+			}
+		}
+
+		return ReceivedImagePayload(pngData: png, tiffData: tiff)
 	}
 
     private static func imageSourceData(from pasteboard: NSPasteboard) -> Data? {
@@ -524,7 +568,8 @@ class ClipboardPlugin: PluginProtocol {
             return false
         }
 
-        guard peerCertificateMatches(context, expectedCertData: storedCertData) else {
+		guard let peerCert = TLSHelpers.copyPeerLeafCertificate(context),
+			  (SecCertificateCopyData(peerCert) as Data) == storedCertData else {
             KLog.log("[Clipboard] Image transfer peer cert mismatch")
             SSLClose(context)
             Darwin.close(clientFd)
@@ -618,148 +663,26 @@ class ClipboardPlugin: PluginProtocol {
 		destURL: URL,
 		storedCertData: Data
 	) -> Bool {
-		let fd = socket(AF_INET, SOCK_STREAM, 0)
-		guard fd >= 0 else { return false }
-
-		var addr = sockaddr_in()
-		addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-		addr.sin_family = sa_family_t(AF_INET)
-		addr.sin_port = port.bigEndian
-		guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else {
-			Darwin.close(fd)
-			return false
-		}
-
-		var timeout = timeval(tv_sec: __darwin_time_t(Self.connectTimeout), tv_usec: 0)
-		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
-		let connectResult = withUnsafePointer(to: &addr) { pointer in
-			pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-				Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-			}
-		}
-		guard connectResult == 0 else {
-			Darwin.close(fd)
-			return false
-		}
-
-		SocketHelpers.configureTransferSocket(fd: fd, ioTimeoutSeconds: Int(Self.connectTimeout))
-		guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
-			Darwin.close(fd)
-			return false
-		}
-
-		return withExtendedLifetime(transferId) {
-			downloadFileTLS(
-				fd: fd,
-				identity: transferId.identity,
-				expectedSize: expectedSize,
-				destURL: destURL,
-				storedCertData: storedCertData
-			)
-		}
-	}
-
-	private nonisolated static func downloadFileTLS(
-		fd: Int32,
-		identity: SecIdentity,
-		expectedSize: Int64,
-		destURL: URL,
-		storedCertData: Data
-	) -> Bool {
-		guard let context = SSLCreateContext(nil, .clientSide, .streamType) else {
-			Darwin.close(fd)
-			return false
-		}
-
-		let fdPointer = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-		defer { fdPointer.deallocate() }
-		fdPointer.pointee = fd
-		TLSHelpers.configure(
-			context,
-			TLSContextConfig(
-				isServer: false,
-				identity: identity,
-				fdPtr: fdPointer
-			)
+		let totalRead = TLSHelpers.downloadPayloadFile(
+			host: host,
+			port: port,
+			expectedSize: expectedSize,
+			destURL: destURL,
+			storedCertData: storedCertData,
+			role: "Clipboard file receive",
+			filePermissions: 0o600,
+			connectTimeout: connectTimeout,
+			handshakeTimeout: handshakeTimeout,
+			stallTimeout: stallTimeout,
+			totalTimeout: totalTimeout,
+			chunkSize: chunkSize
 		)
 
-		guard TLSHelpers.runHandshake(context, role: "Clipboard file receive", deadline: Self.handshakeTimeout) else {
-			SSLClose(context)
-			Darwin.close(fd)
-			return false
-		}
-
-		guard peerCertificateMatches(context, expectedCertData: storedCertData) else {
-			KLog.log("[Clipboard] File receive peer cert mismatch")
-			SSLClose(context)
-			Darwin.close(fd)
-			return false
-		}
-
-		guard FileManager.default.createFile(atPath: destURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-			SSLClose(context)
-			Darwin.close(fd)
-			return false
-		}
-
-		guard let fileHandle = try? FileHandle(forWritingTo: destURL) else {
-			SSLClose(context)
-			Darwin.close(fd)
-			return false
-		}
-
-		defer { try? fileHandle.close() }
-
-		let started = Date()
-		var totalRead: Int64 = 0
-		var buffer = [UInt8](repeating: 0, count: Self.chunkSize)
-		var lastProgress = Date()
-
-		readLoop: while totalRead < expectedSize {
-			if Date().timeIntervalSince(started) > Self.totalTimeout {
-				break
-			}
-
-			var bytesRead = 0
-			let toRead = min(buffer.count, Int(expectedSize - totalRead))
-			let status = SSLRead(context, &buffer, toRead, &bytesRead)
-
-			if bytesRead > 0 {
-				fileHandle.write(Data(buffer[0..<bytesRead]))
-				totalRead += Int64(bytesRead)
-				lastProgress = Date()
-			}
-
-			switch status {
-			case errSecSuccess:
-				if bytesRead == 0 { break readLoop }
-			case errSSLWouldBlock:
-				if Date().timeIntervalSince(lastProgress) > Self.stallTimeout {
-					break readLoop
-				}
-				if bytesRead == 0 { usleep(5000) }
-			case errSSLClosedGraceful, errSSLClosedAbort:
-				break readLoop
-			default:
-				break readLoop
-			}
-		}
-
-		SSLClose(context)
-		Darwin.close(fd)
-
-		guard totalRead == expectedSize else {
+		guard let totalRead = totalRead, totalRead == expectedSize else {
 			try? FileManager.default.removeItem(at: destURL)
 			return false
 		}
 
 		return true
 	}
-
-    private nonisolated static func peerCertificateMatches(_ context: SSLContext, expectedCertData: Data) -> Bool {
-        guard let peerCertificate = TLSHelpers.copyPeerLeafCertificate(context) else { return false }
-        return SecCertificateCopyData(peerCertificate) as Data == expectedCertData
-    }
 }
