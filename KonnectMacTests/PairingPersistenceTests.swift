@@ -61,4 +61,32 @@ final class PairingPersistenceTests: XCTestCase {
         XCTAssertNil(config.savedDeviceIP(for: "android"))
         XCTAssertNil(config.savedDevicePort(for: "android"))
     }
+
+	func testDeviceIdPersistsAcrossConfigurationInstances() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		defer { defaults.removePersistentDomain(forName: suiteName) }
+
+		let first = Config(defaults: defaults)
+		XCTAssertFalse(first.deviceId.isEmpty)
+		XCTAssertFalse(first.deviceId.contains("-"))
+		XCTAssertEqual(first.deviceId, first.deviceId.lowercased())
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), first.deviceId)
+
+		let second = Config(defaults: defaults)
+		XCTAssertEqual(second.deviceId, first.deviceId)
+	}
+
+	func testExistingPersistedDeviceIdIsPreservedWithoutSanitization() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		defer { defaults.removePersistentDomain(forName: suiteName) }
+
+		let existingId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+		defaults.set(existingId, forKey: "deviceId")
+
+		let config = Config(defaults: defaults)
+		XCTAssertEqual(config.deviceId, existingId)
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), existingId)
+	}
 }

@@ -65,13 +65,14 @@ class Config: ObservableObject {
     init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
         self.defaults = defaults
         self.pairingDirectoryOverride = pairingDirectory
-        let generatedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let rawId = defaults.string(forKey: "deviceId") ?? generatedId
-        let sanitizedId = rawId.replacingOccurrences(of: "-", with: "").lowercased()
-        if rawId != sanitizedId {
-            defaults.set(sanitizedId, forKey: "deviceId")
-        }
-        self.deviceId = sanitizedId
+		if let persistedId = defaults.string(forKey: "deviceId") {
+			self.deviceId = persistedId
+		} else {
+			let generatedId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+			defaults.set(generatedId, forKey: "deviceId")
+			self.deviceId = generatedId
+		}
+
         self.deviceName = defaults.string(forKey: "deviceName") ?? Host.current().localizedName ?? "Mac"
         let rawPort = defaults.integer(forKey: "tcpPort")
         let parsedPort = UInt16(exactly: rawPort) ?? Config.defaultPort

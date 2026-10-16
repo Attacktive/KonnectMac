@@ -66,38 +66,85 @@ final class NetworkPacketTests: XCTestCase {
         XCTAssertTrue(device.peerIncomingCapabilities.isEmpty)
     }
 
-    func testUpstreamClipboardImagePacketMetadata() throws {
-        // kdeconnect-kde names clipboard images "<epoch ms>.PNG".
-        var packet = NetworkPacket(type: NetworkPacket.clipboardFilePacketType, body: [
-            "filename": AnyCodable("1792131265479.PNG")
-        ])
-        packet.payloadSize = 4096
-        packet.payloadTransferInfo = ["port": AnyCodable(1739)]
+	func testUpstreamClipboardImagePacketMetadata() throws {
+		// kdeconnect-kde names clipboard images "<epoch ms>.PNG".
+		var packet = NetworkPacket(
+			type: NetworkPacket.clipboardFilePacketType,
+			body: [
+				"filename": AnyCodable("1792131265479.PNG")
+			]
+		)
 
-        let metadata = try XCTUnwrap(ClipboardPlugin.imageTransferMetadata(from: packet))
+		packet.payloadSize = 4096
+		packet.payloadTransferInfo = ["port": AnyCodable(1739)]
 
-        XCTAssertEqual(metadata.port, 1739)
-        XCTAssertEqual(metadata.size, 4096)
-        XCTAssertEqual(metadata.filename, "1792131265479.PNG")
-    }
+		let metadata = try XCTUnwrap(ClipboardPlugin.fileTransferMetadata(from: packet))
 
-    func testClipboardFilePacketRejectsNonImageFile() {
-        var packet = NetworkPacket(type: NetworkPacket.clipboardFilePacketType, body: [
-            "filename": AnyCodable("report.pdf")
-        ])
-        packet.payloadSize = 4096
-        packet.payloadTransferInfo = ["port": AnyCodable(1739)]
+		XCTAssertEqual(metadata.port, 1739)
+		XCTAssertEqual(metadata.size, 4096)
+		XCTAssertEqual(metadata.filename, "1792131265479.PNG")
+	}
 
-        XCTAssertNil(ClipboardPlugin.imageTransferMetadata(from: packet))
-    }
+	func testClipboardFilePacketAcceptsArbitraryFile() throws {
+		var packet = NetworkPacket(
+			type: NetworkPacket.clipboardFilePacketType,
+			body: [
+				"filename": AnyCodable("report.pdf")
+			]
+		)
 
-    func testClipboardFilePacketRejectsOversizedPayload() {
-        var packet = NetworkPacket(type: NetworkPacket.clipboardFilePacketType, body: [
-            "filename": AnyCodable("screenshot.png")
-        ])
-        packet.payloadSize = 100 * 1024 * 1024
-        packet.payloadTransferInfo = ["port": AnyCodable(1739)]
+		packet.payloadSize = 4096
+		packet.payloadTransferInfo = ["port": AnyCodable(1739)]
 
-        XCTAssertNil(ClipboardPlugin.imageTransferMetadata(from: packet))
-    }
+		let metadata = try XCTUnwrap(ClipboardPlugin.fileTransferMetadata(from: packet))
+
+		XCTAssertEqual(metadata.port, 1739)
+		XCTAssertEqual(metadata.size, 4096)
+		XCTAssertEqual(metadata.filename, "report.pdf")
+	}
+
+	func testClipboardFilePacketSanitizesFilename() throws {
+		var packet = NetworkPacket(
+			type: NetworkPacket.clipboardFilePacketType,
+			body: [
+				"filename": AnyCodable("../../report.pdf")
+			]
+		)
+
+		packet.payloadSize = 4096
+		packet.payloadTransferInfo = ["port": AnyCodable(1739)]
+
+		let metadata = try XCTUnwrap(ClipboardPlugin.fileTransferMetadata(from: packet))
+
+		XCTAssertEqual(metadata.port, 1739)
+		XCTAssertEqual(metadata.size, 4096)
+		XCTAssertEqual(metadata.filename, "____report.pdf")
+	}
+
+	func testClipboardFilePacketRejectsOversizedPayload() {
+		var packet = NetworkPacket(
+			type: NetworkPacket.clipboardFilePacketType,
+			body: [
+				"filename": AnyCodable("huge.iso")
+			]
+		)
+
+		packet.payloadSize = 3 * 1024 * 1024 * 1024
+		packet.payloadTransferInfo = ["port": AnyCodable(1739)]
+
+		XCTAssertNil(ClipboardPlugin.fileTransferMetadata(from: packet))
+	}
+
+	func testClipboardFilePacketRejectsMissingPort() {
+		var packet = NetworkPacket(
+			type: NetworkPacket.clipboardFilePacketType,
+			body: [
+				"filename": AnyCodable("report.pdf")
+			]
+		)
+
+		packet.payloadSize = 4096
+
+		XCTAssertNil(ClipboardPlugin.fileTransferMetadata(from: packet))
+	}
 }
