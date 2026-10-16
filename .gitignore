@@ -11,6 +11,9 @@ xcuserdata/
 *.xccheckout
 *.moved-aside
 
+# JetBrains
+.idea/
+
 # macOS
 .DS_Store
 .AppleDouble
