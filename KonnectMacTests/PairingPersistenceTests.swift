@@ -102,8 +102,8 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertEqual(config.savedDeviceName(for: "android"), "Android")
 
 		var identityResets = 0
-		config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
-		config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+		try config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+		try config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
 
 		XCTAssertEqual(identityResets, 1)
 		XCTAssertNotEqual(config.deviceId, legacyId)
@@ -115,7 +115,7 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertNil(config.savedDevicePort(for: "android"))
 
 		let relaunched = Config(defaults: defaults, pairingDirectory: directory)
-		relaunched.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+		try relaunched.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
 		XCTAssertEqual(relaunched.deviceId, config.deviceId)
 		XCTAssertEqual(identityResets, 1)
 	}
@@ -140,5 +140,73 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertEqual(config.deviceId, compliantId)
 		XCTAssertEqual(defaults.string(forKey: "deviceId"), compliantId)
 		XCTAssertEqual(config.savedDeviceName(for: "android"), "Android")
+	}
+
+	func testFailedPairingCleanupLeavesLegacyIdentityRetryable() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		let blocker = root.appendingPathComponent("blocked-parent")
+		let pairingDirectory = blocker.appendingPathComponent("PairedDevices", isDirectory: true)
+		try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+		try Data("not a directory".utf8).write(to: blocker)
+		defer {
+			defaults.removePersistentDomain(forName: suiteName)
+			try? FileManager.default.removeItem(at: root)
+		}
+
+		let legacyId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+		defaults.set(legacyId, forKey: "deviceId")
+		let config = Config(defaults: defaults, pairingDirectory: pairingDirectory)
+		config.saveDeviceName("Android", for: "android")
+
+		XCTAssertThrowsError(try config.migrateLegacyDeviceIdIfNeeded(resetIdentity: {}))
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), legacyId)
+		XCTAssertEqual(config.savedDeviceName(for: "android"), "Android")
+
+		try FileManager.default.removeItem(at: blocker)
+		try FileManager.default.createDirectory(at: pairingDirectory, withIntermediateDirectories: true)
+		try Data("paired certificate".utf8).write(to: pairingDirectory.appendingPathComponent("android.der"))
+		try config.migrateLegacyDeviceIdIfNeeded(resetIdentity: {})
+
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), config.deviceId)
+		XCTAssertFalse(FileManager.default.fileExists(atPath: pairingDirectory.path))
+		XCTAssertNil(config.savedDeviceName(for: "android"))
+	}
+
+	func testFailedIdentityResetPreservesPairingsUntilRetrySucceeds() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		let certificateURL = directory.appendingPathComponent("android.der")
+		let certificate = Data("paired certificate".utf8)
+		try certificate.write(to: certificateURL)
+		defer {
+			defaults.removePersistentDomain(forName: suiteName)
+			try? FileManager.default.removeItem(at: directory)
+		}
+
+		let legacyId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+		defaults.set(legacyId, forKey: "deviceId")
+		let config = Config(defaults: defaults, pairingDirectory: directory)
+		config.saveDeviceName("Android", for: "android")
+
+		let failedReset: () throws -> Void = {
+			throw CocoaError(.fileWriteNoPermission)
+		}
+
+		XCTAssertThrowsError(try config.migrateLegacyDeviceIdIfNeeded(resetIdentity: failedReset))
+
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), legacyId)
+		XCTAssertEqual(try Data(contentsOf: certificateURL), certificate)
+		XCTAssertEqual(config.savedDeviceName(for: "android"), "Android")
+
+		let relaunched = Config(defaults: defaults, pairingDirectory: directory)
+		try relaunched.migrateLegacyDeviceIdIfNeeded(resetIdentity: {})
+
+		XCTAssertEqual(defaults.string(forKey: "deviceId"), relaunched.deviceId)
+		XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+		XCTAssertNil(relaunched.savedDeviceName(for: "android"))
 	}
 }

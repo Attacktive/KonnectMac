@@ -49,12 +49,20 @@ class CertificateManager {
         FileManager.default.fileExists(atPath: p12Path.path)
     }
 
-	func resetIdentity() {
+	func resetIdentity() throws {
 		lock.lock()
 		defer { lock.unlock() }
 
+		do {
+			try FileManager.default.removeItem(at: p12Path)
+		} catch let error as NSError {
+			let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+			guard underlying?.domain == NSPOSIXErrorDomain, underlying?.code == Int(ENOENT) else {
+				throw error
+			}
+		}
+
 		cachedIdentity = nil
-		try? FileManager.default.removeItem(at: p12Path)
 	}
 
     /// One-time-per-launch sweep that removes orphaned per-transfer keychains.

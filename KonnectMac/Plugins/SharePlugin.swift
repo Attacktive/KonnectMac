@@ -105,7 +105,7 @@ class SharePlugin: PluginProtocol {
         }
 
         if let filename = packet.body["filename"]?.value as? String {
-            let sanitized = sanitizeFilename(filename)
+			let sanitized = FileTransferFilename.sanitize(filename, fallback: "download")
             let payloadSize = packet.payloadSize ?? 0
 
             let port = packet.payloadTransferInfo?["port"]?.asPort()
@@ -670,27 +670,5 @@ class SharePlugin: PluginProtocol {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private func sanitizeFilename(_ name: String) -> String {
-        var s = name.precomposedStringWithCanonicalMapping
-        s = s.replacingOccurrences(of: "..", with: "_")
-        s = s.replacingOccurrences(of: "/", with: "_")
-        s = s.replacingOccurrences(of: "\\", with: "_")
-        s = s.replacingOccurrences(of: ":", with: "_")
-        s = s.replacingOccurrences(of: "\0", with: "")
-        while s.hasPrefix(".") { s = String(s.dropFirst()) }
-        if s.isEmpty { s = "download" }
-        // Truncate to APFS 255-byte filename limit (preserving extension)
-        if s.utf8.count > 250 {
-            let ext = (s as NSString).pathExtension
-            let stem = (s as NSString).deletingPathExtension
-            let maxStemBytes = 250 - (ext.isEmpty ? 0 : ext.utf8.count + 1)
-            var truncated = stem
-            while truncated.utf8.count > maxStemBytes {
-                truncated = String(truncated.dropLast())
-            }
-            s = ext.isEmpty ? truncated : "\(truncated).\(ext)"
-        }
-        return s
-    }
 }
 

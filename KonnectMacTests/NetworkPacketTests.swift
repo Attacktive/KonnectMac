@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import KonnectMac
 
@@ -194,5 +195,82 @@ final class NetworkPacketTests: XCTestCase {
 
 		XCTAssertFalse(FileManager.default.fileExists(atPath: oldDir.path))
 		XCTAssertTrue(FileManager.default.fileExists(atPath: freshDir.path))
+	}
+
+	func testNewerClipboardFileWinsWhenOlderPeerFinishesLast() throws {
+		let pasteboard = NSPasteboard.withUniqueName()
+		let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		defer {
+			pasteboard.releaseGlobally()
+			try? FileManager.default.removeItem(at: root)
+		}
+
+		let olderURL = try stagedClipboardFile(in: root, name: "older")
+		let newerURL = try stagedClipboardFile(in: root, name: "newer")
+		let olderPeer = ClipboardPlugin(device: Device(id: "older-peer", name: "Older"), pasteboard: pasteboard)
+		let newerPeer = ClipboardPlugin(device: Device(id: "newer-peer", name: "Newer"), pasteboard: pasteboard)
+		let olderReceive = olderPeer.beginFileReceive()
+		let newerReceive = newerPeer.beginFileReceive()
+		newerPeer.applyReceivedFile(at: newerURL, transferDir: newerURL.deletingLastPathComponent(), imagePayload: nil, receive: newerReceive)
+		olderPeer.applyReceivedFile(at: olderURL, transferDir: olderURL.deletingLastPathComponent(), imagePayload: nil, receive: olderReceive)
+
+		XCTAssertEqual(pasteboard.string(forType: .fileURL), newerURL.absoluteString)
+		XCTAssertTrue(FileManager.default.fileExists(atPath: newerURL.path))
+		XCTAssertFalse(FileManager.default.fileExists(atPath: olderURL.deletingLastPathComponent().path))
+	}
+
+	func testNewerClipboardTextInvalidatesPendingFileReceive() throws {
+		let pasteboard = NSPasteboard.withUniqueName()
+		let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		defer {
+			pasteboard.releaseGlobally()
+			try? FileManager.default.removeItem(at: root)
+		}
+
+		let fileURL = try stagedClipboardFile(in: root, name: "older")
+		let plugin = ClipboardPlugin(device: Device(id: "peer", name: "Peer"), pasteboard: pasteboard)
+		let receive = plugin.beginFileReceive()
+		plugin.handle(packet: NetworkPacket(type: "kdeconnect.clipboard", body: ["content": AnyCodable("new text")]))
+		plugin.applyReceivedFile(at: fileURL, transferDir: fileURL.deletingLastPathComponent(), imagePayload: nil, receive: receive)
+
+		XCTAssertEqual(pasteboard.string(forType: .string), "new text")
+		XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.deletingLastPathComponent().path))
+	}
+
+	func testStoppedClipboardPluginDiscardsPendingFileReceive() throws {
+		let pasteboard = NSPasteboard.withUniqueName()
+		let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		defer {
+			pasteboard.releaseGlobally()
+			try? FileManager.default.removeItem(at: root)
+		}
+
+		pasteboard.setString("local clipboard", forType: .string)
+		let fileURL = try stagedClipboardFile(in: root, name: "older")
+		let plugin = ClipboardPlugin(device: Device(id: "peer", name: "Peer"), pasteboard: pasteboard)
+		let receive = plugin.beginFileReceive()
+		plugin.stop()
+		plugin.applyReceivedFile(at: fileURL, transferDir: fileURL.deletingLastPathComponent(), imagePayload: nil, receive: receive)
+
+		XCTAssertEqual(pasteboard.string(forType: .string), "local clipboard")
+		XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.deletingLastPathComponent().path))
+	}
+
+	private func stagedClipboardFile(in root: URL, name: String) throws -> URL {
+		let directory = root.appendingPathComponent(name, isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		let fileURL = directory.appendingPathComponent("\(name).txt")
+		try Data(name.utf8).write(to: fileURL)
+		return fileURL
+	}
+
+	func testSharedShareFilenameSanitizerBoundsOverlongUnicodeExtension() {
+		let filename = "report." + String(repeating: "é", count: 300)
+		let sanitized = FileTransferFilename.sanitize(filename, fallback: "download")
+
+		XCTAssertEqual(sanitized, "report." + String(repeating: "é", count: 100))
+		XCTAssertLessThanOrEqual(sanitized.utf8.count, 250)
+		XCTAssertEqual(FileTransferFilename.sanitize("../../report.pdf", fallback: "download"), "____report.pdf")
+		XCTAssertEqual(FileTransferFilename.sanitize("\0", fallback: "download"), "download")
 	}
 }

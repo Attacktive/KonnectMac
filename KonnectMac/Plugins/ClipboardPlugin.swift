@@ -14,6 +14,8 @@ class ClipboardPlugin: PluginProtocol {
 	}
 
     let device: Device
+	private let pasteboard: NSPasteboard
+	private var activeReceiveToken: UUID?
     private var lastSentContent = ""
     var lastReceivedContent = "" {
         didSet {
@@ -35,6 +37,8 @@ class ClipboardPlugin: PluginProtocol {
 	private static let maxFileBytes: Int64 = 50 * 1024 * 1024
 	private static let chunkSize = 65536
 	private static var lastReceivedTransferDirectory: URL?
+	// The pasteboard is shared by all peers, so a newer receive supersedes transfers from every plugin instance.
+	private static var latestReceiveToken: UUID?
 	private static let acceptTimeout: TimeInterval = 20
     private static let connectTimeout: TimeInterval = 15
     private static let handshakeTimeout: TimeInterval = 20
@@ -56,9 +60,10 @@ class ClipboardPlugin: PluginProtocol {
 			}
 		}
 	}
-    init(device: Device) {
-        self.device = device
-    }
+	init(device: Device, pasteboard: NSPasteboard = .general) {
+		self.device = device
+		self.pasteboard = pasteboard
+	}
 
     deinit {
         // Timer invalidation must happen on the thread that created it (main thread).
@@ -78,6 +83,7 @@ class ClipboardPlugin: PluginProtocol {
         clipboardTimer?.invalidate()
         clipboardTimer = nil
         pendingImageTransfer = nil
+		activeReceiveToken = nil
         device.peerIncomingCapabilities.removeAll()
         device.capabilityObserverConnectionId = nil
         // Clear echo prevention flags — stale values prevent sync after reconnect
@@ -108,11 +114,12 @@ class ClipboardPlugin: PluginProtocol {
             KLog.log("[Clipboard] Rejected oversized incoming: \(content.utf8.count) bytes")
             return
         }
+
+		Self.latestReceiveToken = nil
         guard content != lastReceivedContent else { return }
         guard content != lastSentContent else { return }
 
         lastReceivedContent = content
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(content, forType: .string)
         lastChangeCount = pasteboard.changeCount
@@ -152,6 +159,7 @@ class ClipboardPlugin: PluginProtocol {
 		}
 
 		let destURL = transferDir.appendingPathComponent(metadata.filename)
+		let receive = beginFileReceive()
 		weak var weakSelf = self
 		DispatchQueue.global(qos: .userInitiated).async {
 			let success = Self.downloadFile(
@@ -170,7 +178,12 @@ class ClipboardPlugin: PluginProtocol {
 			let imagePayload = Self.extractImagePayload(from: destURL)
 
 			Task { @MainActor in
-				weakSelf?.applyReceivedFile(at: destURL, transferDir: transferDir, imagePayload: imagePayload)
+				guard let self = weakSelf else {
+					try? FileManager.default.removeItem(at: transferDir)
+					return
+				}
+
+				self.applyReceivedFile(at: destURL, transferDir: transferDir, imagePayload: imagePayload, receive: receive)
 			}
 		}
 	}
@@ -181,7 +194,7 @@ class ClipboardPlugin: PluginProtocol {
 			return nil
 		}
 
-		let filename = sanitizeFilename(rawFilename)
+		let filename = FileTransferFilename.sanitize(rawFilename, fallback: "clipboard-file")
 		guard !filename.isEmpty else { return nil }
 
 		guard let payloadSize = packet.payloadSize,
@@ -197,39 +210,6 @@ class ClipboardPlugin: PluginProtocol {
 			size: payloadSize,
 			filename: filename
 		)
-	}
-
-	static func sanitizeFilename(_ name: String) -> String {
-		var sanitized = name.precomposedStringWithCanonicalMapping
-		sanitized = sanitized.replacingOccurrences(of: "..", with: "_")
-		sanitized = sanitized.replacingOccurrences(of: "/", with: "_")
-		sanitized = sanitized.replacingOccurrences(of: "\\", with: "_")
-		sanitized = sanitized.replacingOccurrences(of: ":", with: "_")
-		sanitized = sanitized.replacingOccurrences(of: "\0", with: "")
-		while sanitized.hasPrefix(".") {
-			sanitized = String(sanitized.dropFirst())
-		}
-
-		if sanitized.isEmpty {
-			sanitized = "clipboard-file"
-		}
-
-		if sanitized.utf8.count > 250 {
-			var ext = (sanitized as NSString).pathExtension
-			while ext.utf8.count > 200 {
-				ext = String(ext.dropLast())
-			}
-
-			let maxStemBytes = max(1, 250 - (ext.isEmpty ? 0 : ext.utf8.count + 1))
-			var truncated = (sanitized as NSString).deletingPathExtension
-			while truncated.utf8.count > maxStemBytes {
-				truncated = String(truncated.dropLast())
-			}
-
-			sanitized = ext.isEmpty ? truncated : "\(truncated).\(ext)"
-		}
-
-		return sanitized
 	}
 
     static func incomingCapabilities(from packet: NetworkPacket) -> Set<String> {
@@ -262,7 +242,7 @@ class ClipboardPlugin: PluginProtocol {
     }
 
     private func startMonitoring() {
-        lastChangeCount = NSPasteboard.general.changeCount
+		lastChangeCount = pasteboard.changeCount
         clipboardTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkClipboard()
@@ -271,7 +251,6 @@ class ClipboardPlugin: PluginProtocol {
     }
 
     private func checkClipboard() {
-        let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != lastChangeCount else { return }
         let changeCount = pasteboard.changeCount
         lastChangeCount = changeCount
@@ -317,7 +296,7 @@ class ClipboardPlugin: PluginProtocol {
 
             Task { @MainActor in
                 guard let self = weakSelf else { return }
-                guard NSPasteboard.general.changeCount == pasteboardChangeCount else { return }
+				guard self.pasteboard.changeCount == pasteboardChangeCount else { return }
                 self.queueOutgoingImage(png)
             }
         }
@@ -389,11 +368,30 @@ class ClipboardPlugin: PluginProtocol {
         }
     }
 
-	private func applyReceivedFile(at fileURL: URL, transferDir: URL, imagePayload: ReceivedImagePayload?) {
+	struct FileReceive {
+		let token: UUID
+		let pasteboardChangeCount: Int
+	}
+
+	func beginFileReceive() -> FileReceive {
+		let token = UUID()
+		activeReceiveToken = token
+		Self.latestReceiveToken = token
+		return FileReceive(token: token, pasteboardChangeCount: pasteboard.changeCount)
+	}
+
+	func applyReceivedFile(at fileURL: URL, transferDir: URL, imagePayload: ReceivedImagePayload?, receive: FileReceive) {
+		guard receive.token == activeReceiveToken,
+			  receive.token == Self.latestReceiveToken,
+			  receive.pasteboardChangeCount == pasteboard.changeCount else {
+			try? FileManager.default.removeItem(at: transferDir)
+			return
+		}
+
+		activeReceiveToken = nil
 		lastSentContent = ""
 		lastReceivedContent = ""
 
-		let pasteboard = NSPasteboard.general
 		pasteboard.clearContents()
 
 		var didWrite = false
@@ -420,6 +418,7 @@ class ClipboardPlugin: PluginProtocol {
 		if let previousDir = Self.lastReceivedTransferDirectory, previousDir != transferDir {
 			try? FileManager.default.removeItem(at: previousDir)
 		}
+
 		Self.lastReceivedTransferDirectory = transferDir
 
 		lastSentImageFingerprint = nil

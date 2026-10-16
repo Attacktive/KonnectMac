@@ -54,7 +54,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
 		// After the single-instance lock, so only one process ever rewrites the identity, and before anything reads it.
-		Config.shared.migrateLegacyDeviceIdIfNeeded(resetIdentity: CertificateManager.shared.resetIdentity)
+		do {
+			try Config.shared.migrateLegacyDeviceIdIfNeeded(resetIdentity: CertificateManager.shared.resetIdentity)
+		} catch {
+			KLog.log("[App] Device identity migration failed: \(error)", level: .error)
+			let alert = NSAlert()
+			alert.messageText = "KonnectMac could not update its device identity"
+			alert.informativeText = "The previous device ID has been preserved. Resolve the storage error and relaunch KonnectMac to retry.\n\n\(error.localizedDescription)"
+			alert.alertStyle = .critical
+			alert.addButton(withTitle: "Quit")
+			alert.runModal()
+			NSApp.terminate(nil)
+			return
+		}
 
 		AppDelegate.instance = self
 

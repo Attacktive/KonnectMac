@@ -94,17 +94,17 @@ class Config: ObservableObject {
 
 	/// Replaces a pre-compliance device ID, which KDE Connect peers reject during TLS hostname verification.
 	/// The certificate CN and every peer's trust are bound to the old ID, so both are discarded before the new ID is persisted; a crash midway retries on the next launch.
-	func migrateLegacyDeviceIdIfNeeded(resetIdentity: () -> Void) {
+	func migrateLegacyDeviceIdIfNeeded(resetIdentity: () throws -> Void) throws {
 		guard needsLegacyDeviceIdMigration else {
 			return
 		}
 
-		resetIdentity()
-		clearAllPairedDevices()
+		try resetIdentity()
+		try clearAllPairedDevices()
 		defaults.set(deviceId, forKey: "deviceId")
 		needsLegacyDeviceIdMigration = false
 		KLog.log("[Config] Migrated legacy device ID to compliant format; reset identity and pairings for re-pairing")
-    }
+	}
 
     func save() {
         defaults.set(deviceName, forKey: "deviceName")
@@ -160,9 +160,16 @@ class Config: ObservableObject {
         removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
     }
 
-	private func clearAllPairedDevices() {
-		let dir = pairingDirectory()
-		try? FileManager.default.removeItem(atPath: dir)
+	private func clearAllPairedDevices() throws {
+		do {
+			try FileManager.default.removeItem(atPath: pairingDirectory())
+		} catch let error as NSError {
+			let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+			guard underlying?.domain == NSPOSIXErrorDomain, underlying?.code == Int(ENOENT) else {
+				throw error
+			}
+		}
+
 		defaults.removeObject(forKey: "pairedDeviceNames")
 		defaults.removeObject(forKey: "pairedDeviceTypes")
 		defaults.removeObject(forKey: "pairedDeviceIPs")
