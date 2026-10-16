@@ -12,7 +12,7 @@ struct PreferencesView: View {
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 500, height: 380)
+        .frame(width: 500, height: 400)
     }
 }
 
@@ -20,6 +20,7 @@ struct PreferencesView: View {
 
 struct GeneralTab: View {
     @ObservedObject var config = Config.shared
+	@ObservedObject var updaterViewModel = UpdaterViewModel.shared
     @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
@@ -53,6 +54,16 @@ struct GeneralTab: View {
                 }
                 .padding(6)
             }
+
+			GroupBox("Updates") {
+				VStack(alignment: .leading, spacing: 4) {
+					Toggle("Automatically check for updates", isOn: $updaterViewModel.automaticallyChecksForUpdates)
+						.toggleStyle(.checkbox)
+						.disabled(!updaterViewModel.isAvailable)
+				}
+
+				.padding(6)
+			}
 
             GroupBox("File Transfer") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -380,6 +391,8 @@ struct PluginListView: View {
 // MARK: - About
 
 struct AboutTab: View {
+	@ObservedObject var updaterViewModel = UpdaterViewModel.shared
+
     var body: some View {
         VStack(spacing: 12) {
             if let appIcon = NSImage(named: NSImage.applicationIconName) {
@@ -391,12 +404,21 @@ struct AboutTab: View {
                     .font(.system(size: 48))
                     .foregroundColor(.blue)
             }
+
             Text("KonnectMac")
                 .font(.title.bold())
-            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")")
-                .foregroundColor(.secondary)
+			let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+			Text("Version \(version)")
+				.foregroundColor(.secondary)
+
             Text("A native macOS KDE Connect client")
                 .foregroundColor(.secondary)
+
+			Button("Check for Updates…") {
+				updaterViewModel.checkForUpdates()
+			}
+
+			.disabled(!updaterViewModel.canCheckForUpdates)
 
             Divider().frame(width: 200)
 
@@ -404,15 +426,11 @@ struct AboutTab: View {
                 Text("Protocol v7 • KDE Connect compatible")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("No third-party dependencies")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
                 Text("© \(String(Calendar.current.component(.year, from: Date()))) Aryaraj Singh")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.top, 4)
             }
-
             Divider().frame(width: 200)
 
             HStack(spacing: 16) {

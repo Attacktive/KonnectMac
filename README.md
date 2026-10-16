@@ -6,14 +6,13 @@
 
 <p align="center">
   <strong>Connect your Android phone to your Mac.</strong><br>
-  A native macOS KDE Connect client. Zero dependencies.
+  A native macOS KDE Connect client with in-app updates.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-14%2B-blue?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-5.9-orange?logo=swift" alt="Swift 5.9">
   <img src="https://img.shields.io/badge/KDE%20Connect-Protocol%20v7-green" alt="Protocol v7">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/license-GPL%20v3-blue" alt="GPL v3">
 </p>
 
@@ -26,13 +25,19 @@
 
 KonnectMac is a **native macOS menu bar app** that connects your Android phone to your Mac using the [KDE Connect](https://kdeconnect.kde.org/) protocol. It works with the official KDE Connect Android app (v1.34+) available on [Google Play](https://play.google.com/store/apps/details?id=org.kde.kdeconnect_tp) and [F-Droid](https://f-droid.org/packages/org.kde.kdeconnect_tp/).
 
-No Electron. No web views. No third-party dependencies. Pure Swift + AppKit + SwiftUI.
+Native Swift + AppKit + SwiftUI, with [Sparkle](https://sparkle-project.org/) for secure in-app updates.
 
 ## Download
 
-📦 **[Download KonnectMac](https://github.com/aryarajsingh/KonnectMac/releases/latest)** (.pkg installer)
+📦 **[Download KonnectMac](https://github.com/Attacktive/KonnectMac/releases/latest)** (.dmg disk image, Apple silicon and Intel)
 
-> **Note:** The app is not code-signed yet, so macOS may show an "unidentified developer" warning. Right-click the app → Open to bypass.
+Open the disk image and drag **KonnectMac** into **Applications** before launching it.
+
+> **Note:** Releases are ad-hoc signed, not Developer ID signed or notarized. macOS may block the first launch; only approve it in **System Settings → Privacy & Security** if you trust the download. Sparkle signatures authenticate update archives but do not remove Gatekeeper warnings.
+
+Use **Check for Updates…** in the menu bar popover or **Preferences → About** to check manually. **Preferences → General → Updates** controls automatic checks; Sparkle asks for permission before enabling them and prompts before installing updates.
+
+Existing installations without Sparkle need one manual installation of an updater-enabled release. Later releases can update in place.
 
 ## Features
 
@@ -106,7 +111,7 @@ Mac                              Phone
 ## Build from Source
 
 ```bash
-git clone https://github.com/aryarajsingh/KonnectMac.git
+git clone https://github.com/Attacktive/KonnectMac.git
 cd KonnectMac
 xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -configuration Release build
 ```
@@ -116,6 +121,50 @@ Run the regression suite with:
 ```bash
 xcodebuild -project KonnectMac.xcodeproj -scheme KonnectMac -destination 'platform=macOS' test
 ```
+
+### Publishing releases
+
+The release workflow runs on numeric version tags, with an optional `v` prefix, such as `v2.8` or `2.8.1`. It builds a universal macOS app, ad-hoc signs it, and publishes a DMG, a signed update ZIP, and `appcast.xml` to a GitHub Release. The numeric tag supplies both the app version and Sparkle build version; use increasing versions. Prerelease suffixes are not supported by this stable feed.
+
+Before the first release, create a dedicated Sparkle signing key and configure the repository. No Apple Developer certificate is required:
+
+```bash
+mkdir -p build/sparkle
+curl --fail --location \
+  https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz \
+  -o build/Sparkle-2.10.0.tar.xz
+printf '%s  %s\n' \
+  c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c \
+  build/Sparkle-2.10.0.tar.xz | shasum -a 256 -c -
+tar -xf build/Sparkle-2.10.0.tar.xz -C build/sparkle
+
+build/sparkle/bin/generate_keys --account KonnectMac
+gh variable set SPARKLE_PUBLIC_KEY --repo Attacktive/KonnectMac \
+  --body "$(build/sparkle/bin/generate_keys --account KonnectMac -p)"
+(
+  umask 077
+  key_dir=$(mktemp -d)
+  trap 'rm -rf "$key_dir"' EXIT
+  build/sparkle/bin/generate_keys --account KonnectMac -x "$key_dir/private-key"
+  gh secret set SPARKLE_PRIVATE_KEY --repo Attacktive/KonnectMac < "$key_dir/private-key"
+)
+```
+
+`SPARKLE_PUBLIC_KEY` is a repository **Actions variable**, not a secret. `SPARKLE_PRIVATE_KEY` is a repository **Actions secret**. Keep a secure backup of the private key: losing or replacing it can strand existing ad-hoc-signed installations on their old update key. Never commit the private key or paste it into an issue or pull request.
+
+The workflow refuses to build or publish with missing or mismatched keys. The app embeds the public key and reads its feed from `https://github.com/Attacktive/KonnectMac/releases/latest/download/appcast.xml`. Source builds without `SPARKLE_PUBLIC_KEY` disable update controls; supply that Xcode build setting to enable them. `SPARKLE_FEED_URL` can override the feed for local development.
+
+To exercise the same packaging path locally without publishing, set `SPARKLE_PUBLIC_KEY` and `SPARKLE_PRIVATE_KEY` in the environment and run:
+
+```bash
+./scripts/package-release.sh \
+  --version 2.8 \
+  --tag v2.8 \
+  --sparkle-bin "$PWD/build/sparkle/bin"
+```
+
+Artifacts appear in `build/artifacts/`. The script checks the embedded versions, feed, public key, architecture slices, app signature, and update ZIP signature before exposing the finished artifacts. Keep the Sparkle package version, workflow tool version/checksum, and setup commands above in sync when upgrading Sparkle.
+
 
 <details>
 <summary><strong>Architecture</strong></summary>
@@ -164,6 +213,7 @@ KonnectMac/
 | TLS | SecureTransport | Ships with macOS, no dependencies |
 | Certificates | openssl CLI + Keychain | Self-signed RSA-2048, app-specific keychain |
 | Media Control | MediaRemote (private) | Only way to pause/resume without Accessibility |
+| Updates | Sparkle | Signed update archives and standard update prompts |
 
 </details>
 

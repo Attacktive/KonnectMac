@@ -3,6 +3,7 @@ import UserNotifications
 
 struct MenuBarView: View {
     @ObservedObject var manager = DeviceManager.shared
+	@ObservedObject var updaterViewModel = UpdaterViewModel.shared
     @State private var notificationsEnabled = true
 
     var body: some View {
@@ -74,6 +75,14 @@ struct MenuBarView: View {
             Divider().padding(.vertical, 6).padding(.horizontal, 12)
 
             // App controls
+			MenuItem(
+				"Check for Updates…",
+				icon: "arrow.triangle.2.circlepath"
+			) {
+				updaterViewModel.checkForUpdates()
+			}
+			.disabled(!updaterViewModel.canCheckForUpdates)
+
             MenuItem("Preferences…", icon: "gearshape") {
                 AppDelegate.instance?.openPreferences()
             }

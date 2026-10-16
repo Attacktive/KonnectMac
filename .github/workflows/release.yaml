@@ -1,0 +1,99 @@
+name: 'Release'
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+'
+      - 'v[0-9]+.*'
+      - '[0-9]+'
+      - '[0-9]+.*'
+
+jobs:
+  release:
+    name: 'Package and publish release'
+    runs-on: 'macos-15'
+    permissions:
+      contents: 'write'
+    steps:
+      - name: 'Checkout'
+        uses: 'actions/checkout@v7.0.1'
+
+      - name: 'Validate release tag'
+        id: 'validate-tag'
+        run: |
+          REF_NAME="${GITHUB_REF_NAME}"
+          echo "Processing tag: ${REF_NAME}"
+
+          # Strip optional leading 'v'
+          VERSION="${REF_NAME#v}"
+
+          # Require strictly 1-3 numeric components per Apple version contract (e.g. 2, 2.7, 2.7.0)
+          # Reject prerelease tags (e.g. -alpha, -beta, -rc) to prevent accidental latest prereleases
+          if [[ ! "${VERSION}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            echo "Error: Tag '${REF_NAME}' is not a valid numeric release version." >&2
+            echo "Expected format: 'v1.2.3' or '1.2.3' (1-3 numeric components only)." >&2
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Validate required repository secrets and variables'
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${SPARKLE_PUBLIC_KEY}" ]]; then
+            echo "Error: Repository variable SPARKLE_PUBLIC_KEY is not configured." >&2
+            exit 1
+          fi
+
+          if [[ -z "${SPARKLE_PRIVATE_KEY}" ]]; then
+            echo "Error: Repository secret SPARKLE_PRIVATE_KEY is not configured." >&2
+            exit 1
+          fi
+
+      - name: 'Setup Sparkle tools'
+        run: |
+          SPARKLE_VERSION="2.10.0"
+          SPARKLE_SHA256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
+          SPARKLE_URL="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+
+          mkdir -p build/sparkle
+          curl --fail -sSL "${SPARKLE_URL}" -o build/sparkle/Sparkle.tar.xz
+
+          ACTUAL_SHA256=$(shasum -a 256 build/sparkle/Sparkle.tar.xz | awk '{print $1}')
+          if [[ "${ACTUAL_SHA256}" != "${SPARKLE_SHA256}" ]]; then
+            echo "Error: Sparkle archive checksum mismatch." >&2
+            echo "Expected: ${SPARKLE_SHA256}" >&2
+            echo "Actual:   ${ACTUAL_SHA256}" >&2
+            exit 1
+          fi
+
+          tar -xf build/sparkle/Sparkle.tar.xz -C build/sparkle/
+
+      - name: 'Package release'
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          ./scripts/package-release.sh \
+            --version "${{ steps.validate-tag.outputs.version }}" \
+            --tag "${{ steps.validate-tag.outputs.tag_name }}" \
+            --sparkle-bin "build/sparkle/bin" \
+            --output-dir "build/artifacts"
+
+      - name: 'Publish GitHub release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.validate-tag.outputs.version }}"
+          TAG_NAME="${{ steps.validate-tag.outputs.tag_name }}"
+
+          gh release create "${TAG_NAME}" \
+            --title "KonnectMac ${VERSION}" \
+            --generate-notes \
+            --verify-tag \
+            "build/artifacts/KonnectMac-${VERSION}.dmg" \
+            "build/artifacts/KonnectMac-${VERSION}.zip" \
+            "build/artifacts/appcast.xml"

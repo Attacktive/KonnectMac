@@ -53,7 +53,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return
         }
 
-        AppDelegate.instance = self
+		AppDelegate.instance = self
+
+		UpdaterViewModel.shared.start()
+
         UNUserNotificationCenter.current().delegate = self
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
