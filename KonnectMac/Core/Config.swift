@@ -2,6 +2,11 @@ import Foundation
 import Security
 import ServiceManagement
 
+struct NotificationAppInfo: Identifiable, Equatable {
+	let id: String
+	let name: String
+}
+
 @MainActor
 class Config: ObservableObject {
     static let shared = Config()
@@ -31,6 +36,9 @@ class Config: ObservableObject {
     @Published var downloadDirectory: String {
         didSet { defaults.set(downloadDirectory, forKey: "downloadDirectory") }
     }
+
+	@Published private(set) var notificationAppNames: [String: [String: String]]
+	@Published private(set) var disabledNotificationPackages: [String: Set<String>]
 
     let incomingCapabilities: [String] = [
         "kdeconnect.ping",
@@ -90,6 +98,9 @@ class Config: ObservableObject {
         self.downloadDirectory = defaults.string(forKey: "downloadDirectory")
             ?? (FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")).path
+		self.notificationAppNames = defaults.dictionary(forKey: "notificationAppNames") as? [String: [String: String]] ?? [:]
+		let excluded = defaults.dictionary(forKey: "disabledNotificationPackages") as? [String: [String]] ?? [:]
+		self.disabledNotificationPackages = excluded.mapValues { Set($0) }
     }
 
 	/// Replaces a pre-compliance device ID, which KDE Connect peers reject during TLS hostname verification.
@@ -158,6 +169,9 @@ class Config: ObservableObject {
         removeDictionaryValue(forKey: "pairedDeviceTypes", id: id)
         removeDictionaryValue(forKey: "pairedDeviceIPs", id: id)
         removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
+		notificationAppNames.removeValue(forKey: id)
+		disabledNotificationPackages.removeValue(forKey: id)
+		persistNotificationAppPreferences()
     }
 
 	private func clearAllPairedDevices() throws {
@@ -174,6 +188,10 @@ class Config: ObservableObject {
 		defaults.removeObject(forKey: "pairedDeviceTypes")
 		defaults.removeObject(forKey: "pairedDeviceIPs")
 		defaults.removeObject(forKey: "pairedDevicePorts")
+		defaults.removeObject(forKey: "notificationAppNames")
+		defaults.removeObject(forKey: "disabledNotificationPackages")
+		notificationAppNames.removeAll()
+		disabledNotificationPackages.removeAll()
 	}
 
 	private static func isLegacyDeviceId(_ id: String) -> Bool {
@@ -237,6 +255,103 @@ class Config: ObservableObject {
     func setEnabledPlugins(_ plugins: Set<String>, for deviceId: String) {
         defaults.set(Array(plugins), forKey: "enabledPlugins_\(deviceId)")
     }
+
+	func notificationApps(for deviceId: String) -> [NotificationAppInfo] {
+		let apps = notificationAppNames[deviceId] ?? [:]
+
+		return apps.map { NotificationAppInfo(id: $0.key, name: $0.value) }.sorted { lhs, rhs in
+			if lhs.name.localizedStandardCompare(rhs.name) == .orderedSame {
+				return lhs.id < rhs.id
+			}
+
+			return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+		}
+	}
+
+	func recordNotificationApp(packageName: String, appName: String, for deviceId: String) {
+		guard !packageName.isEmpty, packageName.count <= 255 else {
+			return
+		}
+
+		let previousName = notificationAppNames[deviceId]?[packageName]
+		let reportedName = String(appName.prefix(128)).trimmingCharacters(in: .whitespacesAndNewlines)
+		let displayName: String
+		if reportedName.isEmpty || reportedName.caseInsensitiveCompare("Unknown") == .orderedSame {
+			displayName = previousName ?? packageName
+		} else {
+			displayName = reportedName
+		}
+
+		guard previousName != displayName else {
+			return
+		}
+
+		notificationAppNames[deviceId, default: [:]][packageName] = displayName
+		defaults.set(notificationAppNames, forKey: "notificationAppNames")
+	}
+
+	func isNotificationAppEnabled(packageName: String, for deviceId: String) -> Bool {
+		guard !packageName.isEmpty else {
+			return true
+		}
+
+		return !disabledNotificationPackages[deviceId, default: []].contains(packageName)
+	}
+
+	func setNotificationAppEnabled(_ enabled: Bool, packageName: String, for deviceId: String) {
+		guard !packageName.isEmpty else {
+			return
+		}
+
+		var disabled = disabledNotificationPackages[deviceId] ?? []
+		let changed: Bool
+		if enabled {
+			changed = disabled.remove(packageName) != nil
+		} else {
+			changed = disabled.insert(packageName).inserted
+		}
+
+		guard changed else {
+			return
+		}
+
+		if disabled.isEmpty {
+			disabledNotificationPackages.removeValue(forKey: deviceId)
+		} else {
+			disabledNotificationPackages[deviceId] = disabled
+		}
+
+		persistNotificationAppPreferences()
+	}
+
+	private func persistNotificationAppPreferences() {
+		defaults.set(notificationAppNames, forKey: "notificationAppNames")
+		defaults.set(disabledNotificationPackages.mapValues { Array($0).sorted() }, forKey: "disabledNotificationPackages")
+	}
+
+	/// Removes one no-longer-installed app from the catalog and resets its filter.
+	/// The next notification from that package discovers it again, enabled by default.
+	func forgetNotificationApp(packageName: String, for deviceId: String) {
+		if var apps = notificationAppNames[deviceId] {
+			apps.removeValue(forKey: packageName)
+			if apps.isEmpty {
+				notificationAppNames.removeValue(forKey: deviceId)
+			} else {
+				notificationAppNames[deviceId] = apps
+			}
+		}
+
+		if var excluded = disabledNotificationPackages[deviceId] {
+			excluded.remove(packageName)
+			if excluded.isEmpty {
+				disabledNotificationPackages.removeValue(forKey: deviceId)
+			} else {
+				disabledNotificationPackages[deviceId] = excluded
+			}
+		}
+
+		persistNotificationAppPreferences()
+	}
 
     private func removeDictionaryValue(forKey key: String, id: String) {
         var dictionary = defaults.dictionary(forKey: key) ?? [:]

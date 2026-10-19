@@ -3,9 +3,129 @@ import UserNotifications
 import AppKit
 import Security
 
+/// Keeps notifications from one phone from consuming another phone's rate-limit capacity.
+struct NotificationRateLimiter {
+	private var windows: [String: (started: Date, count: Int)] = [:]
+
+	mutating func allows(deviceId: String, eligible: Bool, now: Date) -> Bool {
+		guard eligible else {
+			return false
+		}
+
+		if let window = windows[deviceId], now.timeIntervalSince(window.started) <= 1 {
+			let count = window.count + 1
+			windows[deviceId] = (started: window.started, count: count)
+			return count <= 10
+		}
+
+		windows[deviceId] = (started: now, count: 1)
+		return true
+	}
+}
+
+/// Identifies notifications invalidated by cancellation, muting, or new content.
+struct NotificationDeliveryState {
+	private var revisions: [String: UUID] = [:]
+
+	mutating func activate(id: String) -> UUID {
+		let revision = UUID()
+		revisions[id] = revision
+		return revision
+	}
+
+	mutating func invalidate(id: String) {
+		revisions.removeValue(forKey: id)
+	}
+
+	func isActive(id: String, revision: UUID) -> Bool {
+		revisions[id] == revision
+	}
+
+	func hasActive(id: String) -> Bool {
+		revisions[id] != nil
+	}
+}
+
+/// Serializes deliveries sharing a Notification Center identifier, keeping only the newest waiting update.
+@MainActor
+final class NotificationDeliveryQueue {
+	typealias Completion = @MainActor (Error?) -> Void
+	typealias Submit = (UNNotificationRequest, @escaping Completion) -> Void
+
+	private struct Delivery {
+		let request: UNNotificationRequest
+		let isCurrent: () -> Bool
+		let shouldRemove: () -> Bool
+		let onResult: (Error?) -> Void
+	}
+
+	private let submit: Submit
+	private let remove: (String) -> Void
+	private var inFlight = Set<String>()
+	private var waiting: [String: Delivery] = [:]
+
+	init(submit: @escaping Submit, remove: @escaping (String) -> Void) {
+		self.submit = submit
+		self.remove = remove
+	}
+
+	func enqueue(
+		request: UNNotificationRequest,
+		isCurrent: @escaping () -> Bool,
+		shouldRemove: @escaping () -> Bool,
+		onResult: @escaping (Error?) -> Void
+	) {
+		let delivery = Delivery(request: request, isCurrent: isCurrent, shouldRemove: shouldRemove, onResult: onResult)
+		guard delivery.isCurrent() else {
+			return
+		}
+
+		if inFlight.contains(request.identifier) {
+			waiting[request.identifier] = delivery
+			return
+		}
+
+		send(delivery)
+	}
+
+	private func send(_ delivery: Delivery) {
+		guard delivery.isCurrent() else {
+			return
+		}
+
+		inFlight.insert(delivery.request.identifier)
+		submit(delivery.request) { [weak self] error in
+			self?.finish(delivery, error: error)
+		}
+	}
+
+	private func finish(_ delivery: Delivery, error: Error?) {
+		let identifier = delivery.request.identifier
+		guard inFlight.remove(identifier) != nil else {
+			return
+		}
+
+		if delivery.isCurrent() {
+			delivery.onResult(error)
+		}
+
+		// Never start the newer add until the previous one has finished.
+		if let replacement = waiting.removeValue(forKey: identifier), replacement.isCurrent() {
+			send(replacement)
+			return
+		}
+
+		// Cancellation or unpairing can occur during add; avoid removing a newer live revision.
+		if delivery.shouldRemove() {
+			remove(identifier)
+		}
+	}
+}
+
 @MainActor
 class NotificationPlugin: PluginProtocol {
     let device: Device
+	private let config: Config
 
     // STATIC state — survives plugin recreation across reconnections.
     // Without this, every reconnection wipes the dedup set (causing duplicate notifications)
@@ -13,14 +133,28 @@ class NotificationPlugin: PluginProtocol {
     private static var shownNotificationIds = Set<String>()
     private static var shownNotificationOrder: [String] = []
     private static var notificationContentHash: [String: String] = [:]
+	private static var shownNotificationPackages: [String: String] = [:]
     private static var iconCache: [String: String] = [:]
     private static var pendingIconDownloads: [String: [(String?) -> Void]] = [:]
     private static var cacheLoaded = false
     private static var lastCacheCleanup = Date()
 
-    // Rate limiting: max 10 notifications per second per device
-    private static var rateLimitCount = 0
-    private static var rateLimitWindowStart = Date.distantPast
+    private static var rateLimiter = NotificationRateLimiter()
+	private static var deliveryState = NotificationDeliveryState()
+	private static let deliveryQueue = NotificationDeliveryQueue(
+		submit: { request, completion in
+			UNUserNotificationCenter.current().add(request) { error in
+				Task { @MainActor in
+					completion(error)
+				}
+			}
+		},
+		remove: { identifier in
+			let center = UNUserNotificationCenter.current()
+			center.removeDeliveredNotifications(withIdentifiers: [identifier])
+			center.removePendingNotificationRequests(withIdentifiers: [identifier])
+		}
+	)
 
     private static let cacheDir: String = {
         let path = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -61,8 +195,9 @@ class NotificationPlugin: PluginProtocol {
     // senderPicturePackages set has moved there too (we read it as
     // IconRenderer.senderPicturePackages).
 
-    init(device: Device) {
+    init(device: Device, config: Config = .shared) {
         self.device = device
+		self.config = config
         if !Self.cacheLoaded {
             Self.cacheLoaded = true
             Self.loadIconCacheFromDisk()
@@ -71,6 +206,125 @@ class NotificationPlugin: PluginProtocol {
         Self.periodicCacheCleanupIfNeeded()
     }
 
+	/// Extracts the Android package from KDE Connect's status-bar notification ID.
+	/// An opaque ID cannot be used to identify an app, so its notifications remain allowed by default.
+	static func packageName(from notificationId: String) -> String? {
+		let parts = notificationId.split(separator: "|", omittingEmptySubsequences: false)
+		guard parts.count == 5 || parts.count == 6,
+			let userId = Int(parts[0]), userId >= 0,
+			Int(parts[2]) != nil,
+			let uid = Int(parts[4]), uid >= 0 else {
+			return nil
+		}
+
+		let packageName = String(parts[1])
+		guard packageName.range(of: #"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$"#, options: .regularExpression) != nil else {
+			return nil
+		}
+
+		return packageName
+	}
+
+	static func notificationIdentifier(deviceId: String, notificationId: String) -> String {
+		"notif-\(deviceId)|\(notificationId)"
+	}
+
+	static func iconPath(for packageName: String) -> String? {
+		iconCache[packageName] ?? IconRenderer.fallbackIcon(for: packageName, cacheDir: cacheDir)
+	}
+
+	/// Removes mirrored notifications for a package, or an entire device on unpair.
+	static func clearNotifications(for deviceId: String, packageName: String? = nil) {
+		let prefix = "notif-\(deviceId)|"
+		let identifiers = Set(shownNotificationPackages.compactMap { identifier, savedPackage -> String? in
+			guard identifier.hasPrefix(prefix) else {
+				return nil
+			}
+
+			if let packageName, savedPackage != packageName {
+				return nil
+			}
+
+			return identifier
+		})
+
+		for identifier in identifiers {
+			retireNotification(id: identifier)
+		}
+
+		let center = UNUserNotificationCenter.current()
+		center.removeDeliveredNotifications(withIdentifiers: Array(identifiers))
+		center.removePendingNotificationRequests(withIdentifiers: Array(identifiers))
+
+		// Also clean OS notifications delivered by earlier KonnectMac processes.
+		center.getDeliveredNotifications { delivered in
+			Task { @MainActor in
+				let staleIdentifiers = delivered.compactMap { notification -> String? in
+					let info = notification.request.content.userInfo
+					guard info["deviceId"] as? String == deviceId else {
+						return nil
+					}
+
+					if let packageName, info["androidPackageName"] as? String != packageName {
+						return nil
+					}
+
+					let identifier = notification.request.identifier
+					guard !deliveryState.hasActive(id: identifier) else {
+						return nil
+					}
+
+					return identifier
+				}
+
+				center.removeDeliveredNotifications(withIdentifiers: staleIdentifiers)
+			}
+		}
+
+		center.getPendingNotificationRequests { pending in
+			Task { @MainActor in
+				let staleIdentifiers = pending.compactMap { request -> String? in
+					let info = request.content.userInfo
+					guard info["deviceId"] as? String == deviceId else {
+						return nil
+					}
+
+					if let packageName, info["androidPackageName"] as? String != packageName {
+						return nil
+					}
+
+					guard !deliveryState.hasActive(id: request.identifier) else {
+						return nil
+					}
+
+					return request.identifier
+				}
+
+				center.removePendingNotificationRequests(withIdentifiers: staleIdentifiers)
+			}
+		}
+	}
+
+	private static func retireNotification(id: String) {
+		shownNotificationIds.remove(id)
+		shownNotificationOrder.removeAll { $0 == id }
+		notificationContentHash.removeValue(forKey: id)
+		shownNotificationPackages.removeValue(forKey: id)
+		deliveryState.invalidate(id: id)
+	}
+
+	/// Check pairing and preferences both before and after asynchronous delivery.
+	static func isDeviceEligible(deviceId: String, packageName: String, config: Config) -> Bool {
+		config.isPaired(deviceId: deviceId)
+			&& config.enabledPlugins(for: deviceId).contains("notification")
+			&& config.isNotificationAppEnabled(packageName: packageName, for: deviceId)
+	}
+
+	private static func canDeliverNotification(id: String, revision: UUID, deviceId: String, packageName: String, config: Config) -> Bool {
+		deliveryState.isActive(id: id, revision: revision)
+			&& isDeviceEligible(deviceId: deviceId, packageName: packageName, config: config)
+	}
+
     func canHandle(type: String) -> Bool {
         type == "kdeconnect.notification"
     }
@@ -78,7 +332,23 @@ class NotificationPlugin: PluginProtocol {
     func handle(packet: NetworkPacket) {
         let isCancel = packet.body["isCancel"]?.value as? Bool ?? false
         let notifId = packet.body["id"]?.value as? String ?? UUID().uuidString
-        let packageName = extractPackageName(from: notifId)
+		let reportedPackage = (packet.body["packageName"]?.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+		let packageName = reportedPackage.isEmpty ? (Self.packageName(from: notifId) ?? "") : reportedPackage
+		let notificationKey = Self.notificationIdentifier(deviceId: device.id, notificationId: notifId)
+		let appName = packet.body["appName"]?.value as? String ?? "Unknown"
+		let title = packet.body["title"]?.value as? String ?? ""
+		let text = packet.body["text"]?.value as? String ?? ""
+		let ticker = packet.body["ticker"]?.value as? String ?? ""
+
+		// Discover call-only apps before call handling can return early.
+		if !isCancel,
+			!filteredPackages.contains(where: { packageName.hasPrefix($0) }),
+			!filteredTitles.contains(title),
+			!filteredTitles.contains(appName) {
+			config.recordNotificationApp(packageName: packageName, appName: appName, for: device.id)
+		}
+
+		let appEnabled = config.isNotificationAppEnabled(packageName: packageName, for: device.id)
         let isIncallUI = notifId.contains("incallui") || packageName.contains("incallui")
             || packageName == "com.samsung.android.dialer" || packageName == "com.android.dialer"
             || packageName == "com.google.android.dialer"
@@ -90,8 +360,6 @@ class NotificationPlugin: PluginProtocol {
 
         // Handle call UI notifications separately — these drive media pause/resume
         if isIncallUI {
-            let title = packet.body["title"]?.value as? String ?? ""
-            let text = packet.body["text"]?.value as? String ?? ""
             let combined = (title + " " + text).lowercased()
 
             // Dialer packages send BOTH active call UI AND post-call notifications
@@ -105,11 +373,14 @@ class NotificationPlugin: PluginProtocol {
                 if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
                     telephony.onCallEnded()
                 }
+				Self.retireNotification(id: notificationKey)
+				UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [notificationKey])
+				UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationKey])
             } else if isMissedOrHistory {
                 // Post-call notification from dialer — NOT an active call.
                 // Let it fall through to normal notification display.
                 KLog.log("[Notification] Dialer history notification (not active call)")
-            } else {
+            } else if appEnabled {
                 KLog.log("[Notification] Call UI appeared")
                 if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
                     telephony.onCallStarted(caller: title.isEmpty ? text : title)
@@ -122,9 +393,6 @@ class NotificationPlugin: PluginProtocol {
         // Their notifications contain the actual caller name that telephony packets lack.
         // Cross-reference with telephony to resolve "Unknown caller" → real name.
         if isVoIPCall && !isCancel {
-            let title = packet.body["title"]?.value as? String ?? ""
-            let text = packet.body["text"]?.value as? String ?? ""
-            let appName = packet.body["appName"]?.value as? String ?? ""
             let combined = (title + " " + text).lowercased()
 
             // Detect active call keywords
@@ -134,6 +402,10 @@ class NotificationPlugin: PluginProtocol {
                 || combined.contains("call from")
 
             if isCallNotif {
+				guard appEnabled else {
+					return
+				}
+
                 // Extract caller name: title is usually the caller, unless title = app name
                 let caller: String
                 if !title.isEmpty && title != appName {
@@ -194,35 +466,17 @@ class NotificationPlugin: PluginProtocol {
         }
 
         if isCancel {
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["notif-\(notifId)"])
-            Self.shownNotificationIds.remove(notifId)
-            Self.shownNotificationOrder.removeAll { $0 == notifId }
-            Self.notificationContentHash.removeValue(forKey: notifId)
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [notificationKey])
+			UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationKey])
+            Self.retireNotification(id: notificationKey)
             return
         }
-
-        // Rate limiting: max 10 notifications per second per device
-        let now = Date()
-        if now.timeIntervalSince(Self.rateLimitWindowStart) > 1.0 {
-            Self.rateLimitCount = 0
-            Self.rateLimitWindowStart = now
-        }
-        Self.rateLimitCount += 1
-        if Self.rateLimitCount > 10 {
-            KLog.log("[Notification] Rate limit exceeded (\(Self.rateLimitCount)/s), dropping \(notifId)")
-            return
-        }
-
-        let appName = packet.body["appName"]?.value as? String ?? "Unknown"
-        let title = packet.body["title"]?.value as? String ?? ""
-        let text = packet.body["text"]?.value as? String ?? ""
-        let ticker = packet.body["ticker"]?.value as? String ?? ""
 
         // Deduplication with update detection
         let contentHash = "\(appName)\(title)\(text)"
-        if Self.shownNotificationIds.contains(notifId) {
+        if Self.shownNotificationIds.contains(notificationKey) {
             // Allow through if content changed (notification update)
-            if Self.notificationContentHash[notifId] == contentHash { return }
+            if Self.notificationContentHash[notificationKey] == contentHash { return }
             KLog.log("[Notification] Update detected for \(notifId)")
         }
 
@@ -236,11 +490,22 @@ class NotificationPlugin: PluginProtocol {
             return
         }
 
-        let isNew = Self.shownNotificationIds.insert(notifId).inserted
+		guard appEnabled else {
+			return
+		}
+
+		guard Self.rateLimiter.allows(deviceId: device.id, eligible: appEnabled, now: Date()) else {
+			KLog.log("[Notification] Rate limit exceeded for \(device.id), dropping \(notifId)")
+			return
+		}
+
+        let isNew = Self.shownNotificationIds.insert(notificationKey).inserted
         if isNew {
-            Self.shownNotificationOrder.append(notifId)
+            Self.shownNotificationOrder.append(notificationKey)
         }
-        Self.notificationContentHash[notifId] = contentHash
+        Self.notificationContentHash[notificationKey] = contentHash
+		Self.shownNotificationPackages[notificationKey] = packageName
+		let revision = Self.deliveryState.activate(id: notificationKey)
 
         // Cap at 500 entries to prevent unbounded memory growth
         if Self.shownNotificationOrder.count > 500 {
@@ -248,6 +513,8 @@ class NotificationPlugin: PluginProtocol {
             for id in toRemove {
                 Self.shownNotificationIds.remove(id)
                 Self.notificationContentHash.removeValue(forKey: id)
+				Self.shownNotificationPackages.removeValue(forKey: id)
+				Self.deliveryState.invalidate(id: id)
             }
             Self.shownNotificationOrder.removeFirst(250)
         }
@@ -266,15 +533,15 @@ class NotificationPlugin: PluginProtocol {
         // Check icon cache first, then fallback to SF Symbol icons for known apps
         if let cachedPath = Self.iconCache[packageName] {
             KLog.log("[Notification] Cache hit for \(packageName)")
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId)
+            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId)
         } else if let fallbackPath = IconRenderer.fallbackIcon(for: packageName, cacheDir: Self.cacheDir) {
             KLog.log("[Notification] Using fallback icon for \(packageName)")
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
+            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
 
             // Still try to download the real icon if available (will replace fallback on next notification)
             if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !IconRenderer.senderPicturePackages.contains(packageName) {
                 Self.pendingIconDownloads[packageName] = []
-                let storedCert = Config.shared.loadPairedDeviceCert(id: device.id)
+                let storedCert = config.loadPairedDeviceCert(id: device.id)
                 downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { iconPath in
                     Task { @MainActor in
                         Self.pendingIconDownloads.removeValue(forKey: packageName)
@@ -283,13 +550,13 @@ class NotificationPlugin: PluginProtocol {
             }
         } else if hasPayload, let port = payloadPort {
             // Post notification IMMEDIATELY without icon — don't make user wait for download
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
 
             // Download icon in background. If successful, re-post with icon (same ID = in-place update)
             if Self.pendingIconDownloads[packageName] == nil {
                 Self.pendingIconDownloads[packageName] = []
-                let storedCert = Config.shared.loadPairedDeviceCert(id: device.id)
-                let capturedNotifId = notifId
+                let storedCert = config.loadPairedDeviceCert(id: device.id)
+                let capturedNotifId = notificationKey
                 let capturedAppName = appName
                 let capturedTitle = title
                 let capturedText = text
@@ -299,9 +566,14 @@ class NotificationPlugin: PluginProtocol {
                     Task { @MainActor in
                         // ALWAYS clear pending state — even on failure — so future notifications can retry
                         Self.pendingIconDownloads.removeValue(forKey: packageName)
+                        // Only update the version that requested this icon, never a canceled or muted one.
+						guard Self.deliveryState.isActive(id: capturedNotifId, revision: revision) else {
+							return
+						}
+
                         // Re-post notification with icon (same ID = in-place update)
                         if let iconPath = iconPath {
-                            self?.postNotification(id: capturedNotifId, appName: capturedAppName, title: capturedTitle, text: capturedText, ticker: capturedTicker, iconPath: iconPath, replyId: capturedReplyId)
+                            self?.postNotification(id: capturedNotifId, revision: revision, packageName: packageName, appName: capturedAppName, title: capturedTitle, text: capturedText, ticker: capturedTicker, iconPath: iconPath, replyId: capturedReplyId)
                         } else {
                             KLog.log("[Notification] Icon download failed for \(packageName), will retry on next notification")
                         }
@@ -309,7 +581,7 @@ class NotificationPlugin: PluginProtocol {
                 }
             }
         } else {
-            postNotification(id: notifId, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
         }
     }
 
@@ -317,7 +589,13 @@ class NotificationPlugin: PluginProtocol {
         return Self.iconCache[packageName]
     }
 
-    private func postNotification(id: String, appName: String, title: String, text: String, ticker: String, iconPath: String?, replyId: String?) {
+    private func postNotification(id: String, revision: UUID, packageName: String, appName: String, title: String, text: String, ticker: String, iconPath: String?, replyId: String?) {
+		let deviceId = device.id
+		let config = self.config
+		guard Self.canDeliverNotification(id: id, revision: revision, deviceId: deviceId, packageName: packageName, config: config) else {
+			return
+		}
+
         let content = UNMutableNotificationContent()
         content.title = appName
         if !title.isEmpty && title != appName {
@@ -326,16 +604,22 @@ class NotificationPlugin: PluginProtocol {
         content.body = text.isEmpty ? ticker : text
         content.sound = .default
         content.threadIdentifier = "app-\(appName)"
+		var userInfo = ["deviceId": deviceId, "deliveryRevision": revision.uuidString]
+		if !packageName.isEmpty {
+			userInfo["androidPackageName"] = packageName
+		}
 
         // OTP detection — check body text for verification codes
         if let otpCode = Self.extractOTP(from: content.body) {
             content.categoryIdentifier = "OTP_CODE"
-            content.userInfo = ["otpCode": otpCode, "deviceId": device.id]
+			userInfo["otpCode"] = otpCode
             KLog.log("[Notification] OTP detected (\(otpCode.count) chars)")
         } else if let replyId = replyId {
             content.categoryIdentifier = "NOTIFICATION_REPLY"
-            content.userInfo = ["replyId": replyId, "deviceId": device.id]
+			userInfo["replyId"] = replyId
         }
+
+		content.userInfo = userInfo
 
         if let iconPath = iconPath {
             // UNNotificationAttachment MOVES the file, destroying the original.
@@ -361,20 +645,41 @@ class NotificationPlugin: PluginProtocol {
             }
         }
 
-        let request = UNNotificationRequest(identifier: "notif-\(id)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized else {
-                KLog.log("[Notification] BLOCKED: not authorized (status=\(settings.authorizationStatus.rawValue)). Enable in System Settings > Notifications > KonnectMac")
-                return
-            }
-            UNUserNotificationCenter.current().add(request) { error in
-                if let error = error {
-                    KLog.log("[Notification] Delivery error: \(error)")
-                } else {
-                    KLog.log("[Notification] Delivered: notif-\(id) (alertStyle=\(settings.alertStyle.rawValue))")
-                }
-            }
-        }
+		let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+		UNUserNotificationCenter.current().getNotificationSettings { settings in
+			Task { @MainActor in
+				guard Self.canDeliverNotification(id: id, revision: revision, deviceId: deviceId, packageName: packageName, config: config) else {
+					return
+				}
+
+				guard settings.authorizationStatus == .authorized else {
+					KLog.log("[Notification] BLOCKED: not authorized (status=\(settings.authorizationStatus.rawValue)). Enable in System Settings > Notifications > KonnectMac")
+					return
+				}
+
+				Self.deliveryQueue.enqueue(
+					request: request,
+					isCurrent: {
+						Self.canDeliverNotification(id: id, revision: revision, deviceId: deviceId, packageName: packageName, config: config)
+					},
+					shouldRemove: {
+						guard Self.deliveryState.hasActive(id: id),
+							let currentPackage = Self.shownNotificationPackages[id] else {
+							return true
+						}
+
+						return !Self.isDeviceEligible(deviceId: deviceId, packageName: currentPackage, config: config)
+					},
+					onResult: { error in
+						if let error {
+							KLog.log("[Notification] Delivery error: \(error)")
+						} else {
+							KLog.log("[Notification] Delivered: \(id) (alertStyle=\(settings.alertStyle.rawValue))")
+						}
+					}
+				)
+			}
+		}
     }
 
     // MARK: - Icon Download via BSD Socket + SecureTransport
@@ -600,15 +905,6 @@ class NotificationPlugin: PluginProtocol {
         }
 
         return cachePath
-    }
-
-    private func extractPackageName(from notifId: String) -> String {
-        // Format: "0|com.whatsapp|12345|null|10123"
-        let parts = notifId.split(separator: "|")
-        if parts.count >= 2 {
-            return String(parts[1])
-        }
-        return notifId
     }
 
     /// Periodic cleanup: removes stale tmp- hardlinks, content images in /tmp/, and icons older than 30 days.

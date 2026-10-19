@@ -296,36 +296,41 @@ struct DevicesTab: View {
 // MARK: - Plugins
 
 struct PluginsTab: View {
-    @ObservedObject var manager = DeviceManager.shared
+	@ObservedObject var manager = DeviceManager.shared
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            let pairedDevices = manager.devices.values.filter { Config.shared.isPaired(deviceId: $0.id) }.sorted { $0.name < $1.name }
+	var body: some View {
+		let pairedDevices = manager.devices.values.filter { Config.shared.isPaired(deviceId: $0.id) }.sorted { $0.name < $1.name }
 
-            if pairedDevices.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "puzzlepiece")
-                        .font(.title)
-                        .foregroundColor(.secondary)
-                    Text("Pair a device to configure plugins")
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ForEach(Array(pairedDevices), id: \.id) { device in
-                    PluginListView(device: device)
-                }
-            }
+		if pairedDevices.isEmpty {
+			VStack(spacing: 8) {
+				Image(systemName: "puzzlepiece")
+					.font(.title)
+					.foregroundColor(.secondary)
+				Text("Pair a device to configure plugins")
+					.foregroundColor(.secondary)
+			}
 
-            Spacer()
-        }
-        .padding()
-    }
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
+		} else {
+			ScrollView {
+				LazyVStack(alignment: .leading, spacing: 12) {
+					ForEach(pairedDevices) { device in
+						PluginListView(device: device)
+					}
+				}
+
+				.padding()
+			}
+
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
+		}
+	}
 }
 
 struct PluginListView: View {
     let device: Device
     @State private var enabledPlugins: Set<String> = []
+	@State private var showingNotificationApps = false
 
     private let allPlugins: [(key: String, name: String, description: String, icon: String)] = [
         ("ping", "Ping", "Send and receive pings", "bell.fill"),
@@ -361,6 +366,13 @@ struct PluginListView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
+						if plugin.key == "notification" {
+							Button("Apps…") {
+								showingNotificationApps = true
+							}
+							.controlSize(.small)
+						}
+
                         Toggle("", isOn: Binding(
                             get: { enabledPlugins.contains(plugin.key) },
                             set: { on in
@@ -385,7 +397,111 @@ struct PluginListView: View {
         .onAppear {
             enabledPlugins = Config.shared.enabledPlugins(for: device.id)
         }
+		.sheet(isPresented: $showingNotificationApps) {
+			NotificationAppsView(device: device)
+		}
     }
+}
+
+struct NotificationAppsView: View {
+	let device: Device
+	@ObservedObject private var config = Config.shared
+	@Environment(\.dismiss) private var dismiss
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 12) {
+			HStack {
+				Text("Notifications from \(device.name)")
+					.font(.headline)
+				Spacer()
+				Button("Done") {
+					dismiss()
+				}
+			}
+
+			Text("Choose which Android apps can show notifications on this Mac.")
+				.font(.caption)
+				.foregroundColor(.secondary)
+
+			let apps = config.notificationApps(for: device.id)
+			if apps.isEmpty {
+				VStack(spacing: 8) {
+					Image(systemName: "app.badge")
+						.font(.title)
+						.foregroundColor(.secondary)
+					Text("No apps discovered yet")
+						.fontWeight(.medium)
+					Text("Apps appear here after they send a notification from your phone.")
+						.font(.caption)
+						.foregroundColor(.secondary)
+				}
+
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+			} else {
+				ScrollView {
+					LazyVStack(alignment: .leading, spacing: 0) {
+						ForEach(apps) { app in
+							HStack(spacing: 10) {
+								appIcon(for: app.id)
+									.frame(width: 28, height: 28)
+								VStack(alignment: .leading, spacing: 2) {
+									Text(app.name)
+										.font(.system(size: 13, weight: .medium))
+									Text(app.id)
+										.font(.caption2)
+										.foregroundColor(.secondary)
+										.lineLimit(1)
+								}
+								Spacer()
+								Toggle("", isOn: Binding(
+									get: { config.isNotificationAppEnabled(packageName: app.id, for: device.id) },
+									set: { enabled in
+										config.setNotificationAppEnabled(enabled, packageName: app.id, for: device.id)
+										if !enabled {
+											NotificationPlugin.clearNotifications(for: device.id, packageName: app.id)
+										}
+									}
+								))
+								.toggleStyle(.switch)
+								.labelsHidden()
+
+								Menu {
+									Button("Forget App", role: .destructive) {
+										NotificationPlugin.clearNotifications(for: device.id, packageName: app.id)
+										config.forgetNotificationApp(packageName: app.id, for: device.id)
+									}
+								} label: {
+									Image(systemName: "ellipsis.circle")
+								}
+								.menuStyle(.borderlessButton)
+								.fixedSize()
+								.help("Forget this app; it will reappear when it sends another notification.")
+							}
+							.padding(.vertical, 8)
+							Divider()
+						}
+					}
+				}
+			}
+		}
+
+		.padding(20)
+		.frame(width: 460, height: 400)
+	}
+
+	@ViewBuilder
+	private func appIcon(for packageName: String) -> some View {
+		if let path = NotificationPlugin.iconPath(for: packageName), let icon = NSImage(contentsOfFile: path) {
+			Image(nsImage: icon)
+				.resizable()
+				.scaledToFit()
+		} else {
+			Image(systemName: "app.fill")
+				.resizable()
+				.scaledToFit()
+				.foregroundColor(.secondary)
+		}
+	}
 }
 
 // MARK: - About

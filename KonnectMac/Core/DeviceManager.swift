@@ -769,6 +769,7 @@ class DeviceManager: ObservableObject {
         guard let device = devices[deviceId] else { return }
         let unpairPacket = NetworkPacket.pairPacket(pair: false)
         device.send(unpairPacket)
+		NotificationPlugin.clearNotifications(for: deviceId)
         Config.shared.removePairedDevice(id: deviceId)
         pendingPairRequests.remove(deviceId)
         recentlyPairedDevices.removeValue(forKey: deviceId)
@@ -843,7 +844,8 @@ class DeviceManager: ObservableObject {
                     KLog.log("[Pairing] Ignoring pair=false from \(device.name) — just paired \(Int(Date().timeIntervalSince(pairedAt)))s ago")
                     return
                 }
-                Config.shared.removePairedDevice(id: deviceId)
+                NotificationPlugin.clearNotifications(for: deviceId)
+				Config.shared.removePairedDevice(id: deviceId)
                 updateDeviceState(device, to: .discovered)
                 device.plugins.removeAll()
                 recentlyPairedDevices.removeValue(forKey: deviceId)
