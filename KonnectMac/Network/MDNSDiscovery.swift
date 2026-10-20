@@ -18,15 +18,11 @@ class MDNSDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 		browser.searchForServices(ofType: "_kdeconnect._udp.", inDomain: "local.")
 		KLog.log("[mDNS] Browsing for _kdeconnect._udp.local.")
 
-		let advertisingService = NetService(
-			domain: "local.",
-			type: "_kdeconnect._udp.",
-			name: deviceId,
-			port: Int32(tcpPort)
-		)
+		let advertisingService = NetService(domain: "local.", type: "_kdeconnect._udp.", name: deviceId, port: Int32(tcpPort))
 
 		let txtDict = Self.txtRecordDictionary(deviceId: deviceId, deviceName: deviceName, deviceType: deviceType)
 		let dataDict = txtDict.compactMapValues { $0.data(using: .utf8) }
+
 		advertisingService.setTXTRecord(NetService.data(fromTXTRecord: dataDict))
 		advertisingService.delegate = self
 		advertisingService.publish()
@@ -89,7 +85,9 @@ class MDNSDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 		let txt = Self.parseTXTRecord(sender.txtRecordData())
 		let deviceId = txt["id"] ?? sender.name
 		let port = sender.port > 0 && sender.port <= 65535 ? UInt16(sender.port) : Config.defaultPort
-		guard let addresses = sender.addresses else { return }
+		guard let addresses = sender.addresses else {
+			return
+		}
 
 		for addrData in addresses {
 			guard let host = Self.ipv4Address(from: addrData) else {
@@ -128,7 +126,10 @@ class MDNSDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 	}
 
 	static func parseTXTRecord(_ data: Data?) -> [String: String] {
-		guard let data else { return [:] }
+		guard let data else {
+			return [:]
+		}
+
 		let dict = NetService.dictionary(fromTXTRecord: data)
 		var result = [String: String]()
 		for (key, value) in dict {
@@ -142,9 +143,14 @@ class MDNSDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 
 	static func ipv4Address(from data: Data) -> String? {
 		data.withUnsafeBytes { ptr in
-			guard let base = ptr.baseAddress else { return nil }
+			guard let base = ptr.baseAddress else {
+				return nil
+			}
+
 			let family = base.assumingMemoryBound(to: sockaddr.self).pointee.sa_family
-			guard family == UInt8(AF_INET) else { return nil }
+			guard family == UInt8(AF_INET) else {
+				return nil
+			}
 
 			let sin = base.assumingMemoryBound(to: sockaddr_in.self).pointee
 			var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))

@@ -20,12 +20,15 @@ enum FileTransferFilename {
 
 		let ext = prefix((sanitized as NSString).pathExtension, maxBytes: 200)
 		let suffix = if ext.isEmpty { "" } else { ".\(ext)" }
+
 		let stem = prefix((sanitized as NSString).deletingPathExtension, maxBytes: 250 - suffix.utf8.count)
+
 		return stem + suffix
 	}
 
 	private static func prefix(_ value: String, maxBytes: Int) -> String {
 		var byteCount = 0
+
 		return String(value.prefix { character in
 			let size = character.utf8.count
 			guard byteCount + size <= maxBytes else {
@@ -33,6 +36,7 @@ enum FileTransferFilename {
 			}
 
 			byteCount += size
+
 			return true
 		})
 	}

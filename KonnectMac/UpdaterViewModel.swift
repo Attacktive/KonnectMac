@@ -1,6 +1,6 @@
-import SwiftUI
 import Combine
 import Sparkle
+import SwiftUI
 
 @MainActor
 final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
@@ -9,8 +9,7 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
 	@Published private(set) var canCheckForUpdates: Bool = false
 	@Published var automaticallyChecksForUpdates: Bool = false {
 		didSet {
-			guard let updater = updaterController?.updater,
-				  updater.automaticallyChecksForUpdates != automaticallyChecksForUpdates else {
+			guard let updater = updaterController?.updater, updater.automaticallyChecksForUpdates != automaticallyChecksForUpdates else {
 				return
 			}
 
@@ -36,22 +35,13 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
 			return
 		}
 
-		guard let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
-			!key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-			key != "$(SPARKLE_PUBLIC_KEY)" else {
-			KLog.log(
-				"[Updater] Sparkle public key (SUPublicEDKey) is missing or unset. In-app updater is disabled.",
-				level: .warn
-			)
+		guard let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, key != "$(SPARKLE_PUBLIC_KEY)" else {
+			KLog.log("[Updater] Sparkle public key (SUPublicEDKey) is missing or unset. In-app updater is disabled.", level: .warn)
 
 			return
 		}
 
-		let controller = SPUStandardUpdaterController(
-			startingUpdater: true,
-			updaterDelegate: self,
-			userDriverDelegate: nil
-		)
+		let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
 
 		self.updaterController = controller
 		self.isAvailable = true

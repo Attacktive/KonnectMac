@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # KonnectMac Release Packaging Script
-# Builds universal Release archive, ad-hoc codesigns app, creates DMG and ZIP,
-# generates appcast using official Sparkle generate_appcast, and validates signatures.
+# Builds universal Release archive, ad-hoc codesigns app, creates DMG and ZIP, generates appcast using official Sparkle generate_appcast, and validates signatures.
 
 usage() {
 	echo "Usage: $0 [options]"
@@ -136,6 +135,7 @@ TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/konnectmac-package.XXXXXX")
 cleanup() {
 	rm -rf "${TEMP_DIR}"
 }
+
 trap cleanup EXIT
 
 # Validate keypair match by signing a probe file via official sign_update and verifying with public key

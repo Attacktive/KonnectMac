@@ -10,6 +10,7 @@ final class MDNSDiscoveryTests: XCTestCase {
 			"type": Data("phone".utf8),
 			"protocol": Data("8".utf8)
 		]
+
 		let data = NetService.data(fromTXTRecord: txtDict)
 		let parsed = MDNSDiscovery.parseTXTRecord(data)
 
@@ -32,6 +33,7 @@ final class MDNSDiscoveryTests: XCTestCase {
 		inet_pton(AF_INET, "172.16.1.92", &addr.sin_addr)
 
 		let data = withUnsafeBytes(of: &addr) { Data($0) }
+
 		let extractedIP = MDNSDiscovery.ipv4Address(from: data)
 		XCTAssertEqual(extractedIP, "172.16.1.92")
 	}
@@ -43,6 +45,7 @@ final class MDNSDiscoveryTests: XCTestCase {
 		addr6.sin6_port = UInt16(1716).bigEndian
 
 		let data = withUnsafeBytes(of: &addr6) { Data($0) }
+
 		XCTAssertNil(MDNSDiscovery.ipv4Address(from: data))
 	}
 
@@ -51,14 +54,11 @@ final class MDNSDiscoveryTests: XCTestCase {
 		let identityPacket = NetworkPacket.identityPacket()
 		guard let packetProtocol = identityPacket.body["protocolVersion"]?.value as? Int else {
 			XCTFail("Missing protocolVersion in identity packet")
+
 			return
 		}
 
-		let txt = MDNSDiscovery.txtRecordDictionary(
-			deviceId: "test-device",
-			deviceName: "Test Device",
-			deviceType: "laptop"
-		)
+		let txt = MDNSDiscovery.txtRecordDictionary(deviceId: "test-device", deviceName: "Test Device", deviceType: "laptop")
 
 		XCTAssertEqual(txt["protocol"], String(packetProtocol))
 		XCTAssertEqual(packetProtocol, Config.protocolVersion)

@@ -9,71 +9,77 @@ struct NotificationAppInfo: Identifiable, Equatable {
 
 @MainActor
 class Config: ObservableObject {
-    static let shared = Config()
+	static let shared = Config()
 
 	nonisolated static let minPort: UInt16 = 1716
 	nonisolated static let maxPort: UInt16 = 1764
 	nonisolated static let defaultPort: UInt16 = 1716
 	nonisolated static let protocolVersion: Int = 8
 
-    nonisolated(unsafe) let deviceId: String
+	nonisolated(unsafe) let deviceId: String
 	private var needsLegacyDeviceIdMigration = false
-    @Published var deviceName: String
-    @Published var deviceType: String = "laptop"
-    @Published var tcpPort: UInt16
-    @Published var autoStart: Bool {
-        didSet {
-            guard autoStart != oldValue else { return }
-            updateLoginItem()
-        }
-    }
-    @Published var hasCompletedOnboarding: Bool {
-        didSet { defaults.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
-    }
-    @Published var tailscaleIP: String {
-        didSet { defaults.set(tailscaleIP, forKey: "tailscaleIP") }
-    }
-    @Published var downloadDirectory: String {
-        didSet { defaults.set(downloadDirectory, forKey: "downloadDirectory") }
-    }
+	@Published var deviceName: String
+	@Published var deviceType: String = "laptop"
+	@Published var tcpPort: UInt16
+	@Published var autoStart: Bool {
+		didSet {
+			guard autoStart != oldValue else {
+				return
+			}
+
+			updateLoginItem()
+		}
+	}
+
+	@Published var hasCompletedOnboarding: Bool {
+		didSet { defaults.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
+	}
+
+	@Published var tailscaleIP: String {
+		didSet { defaults.set(tailscaleIP, forKey: "tailscaleIP") }
+	}
+
+	@Published var downloadDirectory: String {
+		didSet { defaults.set(downloadDirectory, forKey: "downloadDirectory") }
+	}
 
 	@Published private(set) var notificationAppNames: [String: [String: String]]
 	@Published private(set) var disabledNotificationPackages: [String: Set<String>]
 
-    let incomingCapabilities: [String] = [
-        "kdeconnect.ping",
-        "kdeconnect.battery",
-        "kdeconnect.notification",
-        "kdeconnect.notification.request",
-        "kdeconnect.telephony",
-        "kdeconnect.clipboard",
-        "kdeconnect.clipboard.connect",
-        "kdeconnect.clipboard.file",
-        "kdeconnect.findmyphone.request",
-        "kdeconnect.share.request",
-        "kdeconnect.pair"
-    ]
+	let incomingCapabilities: [String] = [
+		"kdeconnect.ping",
+		"kdeconnect.battery",
+		"kdeconnect.notification",
+		"kdeconnect.notification.request",
+		"kdeconnect.telephony",
+		"kdeconnect.clipboard",
+		"kdeconnect.clipboard.connect",
+		"kdeconnect.clipboard.file",
+		"kdeconnect.findmyphone.request",
+		"kdeconnect.share.request",
+		"kdeconnect.pair"
+	]
 
-    let outgoingCapabilities: [String] = [
-        "kdeconnect.ping",
-        "kdeconnect.battery.request",
-        "kdeconnect.notification.reply",
-        "kdeconnect.notification.action",
-        "kdeconnect.telephony.request_mute",
-        "kdeconnect.clipboard",
-        "kdeconnect.clipboard.connect",
-        "kdeconnect.clipboard.file",
-        "kdeconnect.findmyphone.request",
-        "kdeconnect.share.request",
-        "kdeconnect.pair"
-    ]
+	let outgoingCapabilities: [String] = [
+		"kdeconnect.ping",
+		"kdeconnect.battery.request",
+		"kdeconnect.notification.reply",
+		"kdeconnect.notification.action",
+		"kdeconnect.telephony.request_mute",
+		"kdeconnect.clipboard",
+		"kdeconnect.clipboard.connect",
+		"kdeconnect.clipboard.file",
+		"kdeconnect.findmyphone.request",
+		"kdeconnect.share.request",
+		"kdeconnect.pair"
+	]
 
-    private let defaults: UserDefaults
-    private let pairingDirectoryOverride: URL?
+	private let defaults: UserDefaults
+	private let pairingDirectoryOverride: URL?
 
-    init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
-        self.defaults = defaults
-        self.pairingDirectoryOverride = pairingDirectory
+	init(defaults: UserDefaults = .standard, pairingDirectory: URL? = nil) {
+		self.defaults = defaults
+		self.pairingDirectoryOverride = pairingDirectory
 		if let persistedId = defaults.string(forKey: "deviceId") {
 			if Self.isLegacyDeviceId(persistedId) {
 				// Persisted only by migrateLegacyDeviceIdIfNeeded, after the identity and pairings bound to the old ID are gone.
@@ -88,20 +94,21 @@ class Config: ObservableObject {
 			self.deviceId = generatedId
 		}
 
-        self.deviceName = defaults.string(forKey: "deviceName") ?? Host.current().localizedName ?? "Mac"
-        let rawPort = defaults.integer(forKey: "tcpPort")
-        let parsedPort = UInt16(exactly: rawPort) ?? Config.defaultPort
-        self.tcpPort = (parsedPort >= Config.minPort && parsedPort <= Config.maxPort) ? parsedPort : Config.defaultPort
-        self.autoStart = defaults.bool(forKey: "autoStart")
-        self.hasCompletedOnboarding = defaults.bool(forKey: "hasCompletedOnboarding")
-        self.tailscaleIP = defaults.string(forKey: "tailscaleIP") ?? ""
-        self.downloadDirectory = defaults.string(forKey: "downloadDirectory")
-            ?? (FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")).path
+		self.deviceName = defaults.string(forKey: "deviceName") ?? Host.current().localizedName ?? "Mac"
+		let rawPort = defaults.integer(forKey: "tcpPort")
+		let parsedPort = UInt16(exactly: rawPort) ?? Config.defaultPort
+		self.tcpPort = (parsedPort >= Config.minPort && parsedPort <= Config.maxPort) ? parsedPort : Config.defaultPort
+		self.autoStart = defaults.bool(forKey: "autoStart")
+		self.hasCompletedOnboarding = defaults.bool(forKey: "hasCompletedOnboarding")
+		self.tailscaleIP = defaults.string(forKey: "tailscaleIP") ?? ""
+		self.downloadDirectory = defaults.string(forKey: "downloadDirectory") ?? (FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")).path
+
 		self.notificationAppNames = defaults.dictionary(forKey: "notificationAppNames") as? [String: [String: String]] ?? [:]
 		let excluded = defaults.dictionary(forKey: "disabledNotificationPackages") as? [String: [String]] ?? [:]
 		self.disabledNotificationPackages = excluded.mapValues { Set($0) }
-    }
+	}
+
+	// MARK: - Device Identity and Pairing
 
 	/// Replaces a pre-compliance device ID, which KDE Connect peers reject during TLS hostname verification.
 	/// The certificate CN and every peer's trust are bound to the old ID, so both are discarded before the new ID is persisted; a crash midway retries on the next launch.
@@ -117,62 +124,69 @@ class Config: ObservableObject {
 		KLog.log("[Config] Migrated legacy device ID to compliant format; reset identity and pairings for re-pairing")
 	}
 
-    func save() {
-        defaults.set(deviceName, forKey: "deviceName")
-        defaults.set(Int(tcpPort), forKey: "tcpPort")
-    }
+	func save() {
+		defaults.set(deviceName, forKey: "deviceName")
+		defaults.set(Int(tcpPort), forKey: "tcpPort")
+	}
 
-    func isPaired(deviceId: String) -> Bool {
-        let path = pairingPath(for: deviceId)
-        return FileManager.default.fileExists(atPath: path)
-    }
+	func isPaired(deviceId: String) -> Bool {
+		let path = pairingPath(for: deviceId)
 
-    func savePairedDevice(id: String, certData: Data) {
-        let dir = pairingDirectory()
-        do {
-            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        } catch {
-            KLog.log("[Config] Failed to create pairing directory: \(error)", level: .error)
-            return
-        }
-        let path = pairingPath(for: id)
-        do {
-            try certData.write(to: URL(fileURLWithPath: path))
-        } catch {
-            KLog.log("[Config] Failed to save paired device cert for \(id): \(error)", level: .error)
-        }
-    }
+		return FileManager.default.fileExists(atPath: path)
+	}
 
-    func loadPairedDeviceCert(id: String) -> Data? {
-        let path = pairingPath(for: id)
-        let data: Data
-        do {
-            data = try Data(contentsOf: URL(fileURLWithPath: path))
-        } catch {
-            if FileManager.default.fileExists(atPath: path) {
-                KLog.log("[Config] Cert file exists but read failed for \(id): \(error)", level: .error)
-            }
-            return nil
-        }
-        // Validate DER format
-        guard SecCertificateCreateWithData(nil, data as CFData) != nil else {
-            KLog.log("[Config] Invalid DER certificate data for \(id)", level: .error)
-            return nil
-        }
-        return data
-    }
+	func savePairedDevice(id: String, certData: Data) {
+		let dir = pairingDirectory()
+		do {
+			try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+		} catch {
+			KLog.log("[Config] Failed to create pairing directory: \(error)", level: .error)
 
-    func removePairedDevice(id: String) {
-        let path = pairingPath(for: id)
-        try? FileManager.default.removeItem(atPath: path)
-        removeDictionaryValue(forKey: "pairedDeviceNames", id: id)
-        removeDictionaryValue(forKey: "pairedDeviceTypes", id: id)
-        removeDictionaryValue(forKey: "pairedDeviceIPs", id: id)
-        removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
+			return
+		}
+
+		let path = pairingPath(for: id)
+		do {
+			try certData.write(to: URL(fileURLWithPath: path))
+		} catch {
+			KLog.log("[Config] Failed to save paired device cert for \(id): \(error)", level: .error)
+		}
+	}
+
+	func loadPairedDeviceCert(id: String) -> Data? {
+		let path = pairingPath(for: id)
+		let data: Data
+		do {
+			data = try Data(contentsOf: URL(fileURLWithPath: path))
+		} catch {
+			if FileManager.default.fileExists(atPath: path) {
+				KLog.log("[Config] Cert file exists but read failed for \(id): \(error)", level: .error)
+			}
+
+			return nil
+		}
+
+		// Validate DER format
+		guard SecCertificateCreateWithData(nil, data as CFData) != nil else {
+			KLog.log("[Config] Invalid DER certificate data for \(id)", level: .error)
+
+			return nil
+		}
+
+		return data
+	}
+
+	func removePairedDevice(id: String) {
+		let path = pairingPath(for: id)
+		try? FileManager.default.removeItem(atPath: path)
+		removeDictionaryValue(forKey: "pairedDeviceNames", id: id)
+		removeDictionaryValue(forKey: "pairedDeviceTypes", id: id)
+		removeDictionaryValue(forKey: "pairedDeviceIPs", id: id)
+		removeDictionaryValue(forKey: "pairedDevicePorts", id: id)
 		notificationAppNames.removeValue(forKey: id)
 		disabledNotificationPackages.removeValue(forKey: id)
 		persistNotificationAppPreferences()
-    }
+	}
 
 	private func clearAllPairedDevices() throws {
 		do {
@@ -202,59 +216,77 @@ class Config: ObservableObject {
 		UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
 	}
 
-    func savedDeviceName(for id: String) -> String? {
-        let names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
-        return names[id]
-    }
+	// MARK: - Saved Device Details
 
-    func saveDeviceName(_ name: String, for id: String) {
-        var names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
-        names[id] = name
-        defaults.set(names, forKey: "pairedDeviceNames")
-    }
+	func savedDeviceName(for id: String) -> String? {
+		let names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
 
-    func saveDeviceType(_ type: String, for id: String) {
-        var types = defaults.dictionary(forKey: "pairedDeviceTypes") as? [String: String] ?? [:]
-        types[id] = type
-        defaults.set(types, forKey: "pairedDeviceTypes")
-    }
+		return names[id]
+	}
 
-    func saveDeviceIP(_ ip: String, for id: String) {
-        var ips = defaults.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
-        ips[id] = ip
-        defaults.set(ips, forKey: "pairedDeviceIPs")
-    }
+	func saveDeviceName(_ name: String, for id: String) {
+		var names = defaults.dictionary(forKey: "pairedDeviceNames") as? [String: String] ?? [:]
+		names[id] = name
+		defaults.set(names, forKey: "pairedDeviceNames")
+	}
 
-    func savedDeviceIP(for id: String) -> String? {
-        let ips = defaults.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
-        return ips[id]
-    }
+	func saveDeviceType(_ type: String, for id: String) {
+		var types = defaults.dictionary(forKey: "pairedDeviceTypes") as? [String: String] ?? [:]
+		types[id] = type
+		defaults.set(types, forKey: "pairedDeviceTypes")
+	}
 
-    func saveDevicePort(_ port: UInt16, for id: String) {
-        guard port >= Config.minPort && port <= Config.maxPort else { return }
-        var ports = defaults.dictionary(forKey: "pairedDevicePorts") as? [String: Int] ?? [:]
-        ports[id] = Int(port)
-        defaults.set(ports, forKey: "pairedDevicePorts")
-    }
+	func saveDeviceIP(_ ip: String, for id: String) {
+		var ips = defaults.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
+		ips[id] = ip
+		defaults.set(ips, forKey: "pairedDeviceIPs")
+	}
 
-    func savedDevicePort(for id: String) -> UInt16? {
-        let ports = defaults.dictionary(forKey: "pairedDevicePorts") as? [String: Int] ?? [:]
-        guard let rawPort = ports[id], let port = UInt16(exactly: rawPort) else { return nil }
-        guard port >= Config.minPort && port <= Config.maxPort else { return nil }
-        return port
-    }
+	func savedDeviceIP(for id: String) -> String? {
+		let ips = defaults.dictionary(forKey: "pairedDeviceIPs") as? [String: String] ?? [:]
 
-    func enabledPlugins(for deviceId: String) -> Set<String> {
-        let key = "enabledPlugins_\(deviceId)"
-        if let arr = defaults.array(forKey: key) as? [String] {
-            return Set(arr)
-        }
-        return Set(["ping", "battery", "notification", "telephony", "clipboard", "findmyphone", "share"])
-    }
+		return ips[id]
+	}
 
-    func setEnabledPlugins(_ plugins: Set<String>, for deviceId: String) {
-        defaults.set(Array(plugins), forKey: "enabledPlugins_\(deviceId)")
-    }
+	func saveDevicePort(_ port: UInt16, for id: String) {
+		guard port >= Config.minPort && port <= Config.maxPort else {
+			return
+		}
+
+		var ports = defaults.dictionary(forKey: "pairedDevicePorts") as? [String: Int] ?? [:]
+		ports[id] = Int(port)
+		defaults.set(ports, forKey: "pairedDevicePorts")
+	}
+
+	func savedDevicePort(for id: String) -> UInt16? {
+		let ports = defaults.dictionary(forKey: "pairedDevicePorts") as? [String: Int] ?? [:]
+		guard let rawPort = ports[id], let port = UInt16(exactly: rawPort) else {
+			return nil
+		}
+
+		guard port >= Config.minPort && port <= Config.maxPort else {
+			return nil
+		}
+
+		return port
+	}
+
+	// MARK: - Plugin Preferences
+
+	func enabledPlugins(for deviceId: String) -> Set<String> {
+		let key = "enabledPlugins_\(deviceId)"
+		if let arr = defaults.array(forKey: key) as? [String] {
+			return Set(arr)
+		}
+
+		return Set(["ping", "battery", "notification", "telephony", "clipboard", "findmyphone", "share"])
+	}
+
+	func setEnabledPlugins(_ plugins: Set<String>, for deviceId: String) {
+		defaults.set(Array(plugins), forKey: "enabledPlugins_\(deviceId)")
+	}
+
+	// MARK: - Notification Application Preferences
 
 	func notificationApps(for deviceId: String) -> [NotificationAppInfo] {
 		let apps = notificationAppNames[deviceId] ?? [:]
@@ -353,55 +385,60 @@ class Config: ObservableObject {
 		persistNotificationAppPreferences()
 	}
 
-    private func removeDictionaryValue(forKey key: String, id: String) {
-        var dictionary = defaults.dictionary(forKey: key) ?? [:]
-        dictionary.removeValue(forKey: id)
-        defaults.set(dictionary, forKey: key)
-    }
+	// MARK: - Storage Helpers
 
-    private func pairingDirectory() -> String {
-        if let pairingDirectoryOverride = pairingDirectoryOverride {
-            return pairingDirectoryOverride.path
-        }
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return appSupport.appendingPathComponent("KonnectMac/PairedDevices").path
-    }
+	private func removeDictionaryValue(forKey key: String, id: String) {
+		var dictionary = defaults.dictionary(forKey: key) ?? [:]
+		dictionary.removeValue(forKey: id)
+		defaults.set(dictionary, forKey: key)
+	}
 
-    private func pairingPath(for id: String) -> String {
-        // Sanitize device ID to prevent path traversal, null byte truncation, and macOS resource fork issues
-        var safeId = id.replacingOccurrences(of: "..", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-            .replacingOccurrences(of: "\0", with: "")
-        if safeId.isEmpty || safeId == "." || safeId == ".." {
-            safeId = "_invalid_"
-        }
-        return pairingDirectory() + "/\(safeId).der"
-    }
+	private func pairingDirectory() -> String {
+		if let pairingDirectoryOverride = pairingDirectoryOverride {
+			return pairingDirectoryOverride.path
+		}
 
-    static let launchAgentLabel = "com.konnectmac.app"
+		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
 
-    private static let launchAgentPath: String = {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return home + "/Library/LaunchAgents/com.konnectmac.app.plist"
-    }()
+		return appSupport.appendingPathComponent("KonnectMac/PairedDevices").path
+	}
 
-    /// Canonical LaunchAgent plist content. Single source of truth — compared byte-for-byte
-    /// against on-disk content to decide whether to rewrite + reload in launchd.
-    ///
-    /// Why each key matters:
-    /// - `RunAtLoad`: start the job at user login.
-    /// - `KeepAlive.SuccessfulExit=false`: restart whenever the job exits with a non-zero
-    ///   status (crash, signal, jetsam during sleep). A clean Quit (NSApp.terminate → exit
-    ///   0) is *not* restarted, so the menu Quit still works.
-    /// - `LimitLoadToSessionType=Aqua`: only load in a logged-in GUI session. Without this,
-    ///   launchd can attempt to spawn before the user's GUI is ready, which fails for an
-    ///   `LSUIElement` app and confuses launchd's job state.
-    /// - `ProcessType=Interactive`: tells launchd this is a user-facing process so App Nap
-    ///   / jetsam treat it accordingly.
-    private static let launchAgentPlistContent: String = """
+	private func pairingPath(for id: String) -> String {
+		// Sanitize device ID to prevent path traversal, null byte truncation, and macOS resource fork issues
+		var safeId = id.replacingOccurrences(of: "..", with: "_")
+			.replacingOccurrences(of: "/", with: "_")
+			.replacingOccurrences(of: "\\", with: "_")
+			.replacingOccurrences(of: ":", with: "_")
+			.replacingOccurrences(of: "\0", with: "")
+
+		if safeId.isEmpty || safeId == "." || safeId == ".." {
+			safeId = "_invalid_"
+		}
+
+		return pairingDirectory() + "/\(safeId).der"
+	}
+
+	// MARK: - Login Item and LaunchAgent
+
+	static let launchAgentLabel = "com.konnectmac.app"
+
+	private static let launchAgentPath: String = {
+		let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+		return home + "/Library/LaunchAgents/com.konnectmac.app.plist"
+	}()
+
+	/// Canonical LaunchAgent plist content.
+	/// Single source of truth — compared byte-for-byte against on-disk content to decide whether to rewrite + reload in launchd.
+	///
+	/// Why each key matters:
+	/// - `RunAtLoad`: start the job at user login.
+	/// - `KeepAlive.SuccessfulExit=false`: restart whenever the job exits with a non-zero status (crash, signal, jetsam during sleep).
+	///   A clean Quit (NSApp.terminate → exit 0) is *not* restarted, so the menu Quit still works.
+	/// - `LimitLoadToSessionType=Aqua`: only load in a logged-in GUI session.
+	///   Without this, launchd can attempt to spawn before the user's GUI is ready, which fails for an `LSUIElement` app and confuses launchd's job state.
+	/// - `ProcessType=Interactive`: tells launchd this is a user-facing process so App Nap / jetsam treat it accordingly.
+	private static let launchAgentPlistContent: String = """
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
     <plist version="1.0">
@@ -427,110 +464,102 @@ class Config: ObservableObject {
     </plist>
     """
 
-    /// True when the current process was spawned by launchd via our LaunchAgent.
-    /// launchd sets `XPC_SERVICE_NAME` to the job's Label; LaunchServices sets it to
-    /// something like `application.com.konnectmac.app.NNN.NNN`.
-    static var isLaunchdManaged: Bool {
-        return ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == launchAgentLabel
-    }
+	/// True when the current process was spawned by launchd via our LaunchAgent.
+	/// launchd sets `XPC_SERVICE_NAME` to the job's Label; LaunchServices sets it to something like `application.com.konnectmac.app.NNN.NNN`.
+	static var isLaunchdManaged: Bool {
+		return ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == launchAgentLabel
+	}
 
-    private func updateLoginItem() {
-        if autoStart {
-            writeAndReloadLaunchAgent()
-        } else {
-            removeLaunchAgent()
-        }
-        defaults.set(autoStart, forKey: "autoStart")
-    }
+	private func updateLoginItem() {
+		if autoStart {
+			writeAndReloadLaunchAgent()
+		} else {
+			removeLaunchAgent()
+		}
 
-    /// Write the plist to disk if its content differs from what's there, and reload the
-    /// job in launchd so the new settings take effect immediately (no reboot required).
-    private func writeAndReloadLaunchAgent() {
-        let dir = FileManager.default.homeDirectoryForCurrentUser.path + "/Library/LaunchAgents"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+		defaults.set(autoStart, forKey: "autoStart")
+	}
 
-        let onDisk = try? String(contentsOfFile: Config.launchAgentPath, encoding: .utf8)
-        let plistChanged = onDisk != Config.launchAgentPlistContent
+	/// Write the plist to disk if its content differs from what's there, and reload the job in launchd so the new settings take effect immediately (no reboot required).
+	private func writeAndReloadLaunchAgent() {
+		let dir = FileManager.default.homeDirectoryForCurrentUser.path + "/Library/LaunchAgents"
+		try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        if plistChanged {
-            do {
-                try Config.launchAgentPlistContent.write(toFile: Config.launchAgentPath, atomically: true, encoding: .utf8)
-                KLog.log("[Config] LaunchAgent plist written to \(Config.launchAgentPath)")
-            } catch {
-                KLog.log("[Config] Failed to write LaunchAgent: \(error)")
-                self.autoStart = false
-                return
-            }
-        }
+		let onDisk = try? String(contentsOfFile: Config.launchAgentPath, encoding: .utf8)
+		let plistChanged = onDisk != Config.launchAgentPlistContent
+		if plistChanged {
+			do {
+				try Config.launchAgentPlistContent.write(toFile: Config.launchAgentPath, atomically: true, encoding: .utf8)
+				KLog.log("[Config] LaunchAgent plist written to \(Config.launchAgentPath)")
+			} catch {
+				KLog.log("[Config] Failed to write LaunchAgent: \(error)")
+				self.autoStart = false
 
-        // Reload in launchd if:
-        //  - plist content actually changed (upgrade case), OR
-        //  - we're not currently running as the launchd-managed instance (post-install
-        //    or first manual launch — we want launchd to take ownership so future
-        //    crashes / wake-from-sleep get auto-restarted by KeepAlive).
-        if plistChanged || !Config.isLaunchdManaged {
-            reloadLaunchdJob()
-        }
-    }
+				return
+			}
+		}
 
-    /// bootout + bootstrap the LaunchAgent so launchd picks up the latest plist *and*
-    /// spawns a managed instance. The managed instance will hit our single-instance
-    /// lock and trigger handoff (see `acquireLockFile` in KonnectMacApp.swift).
-    ///
-    /// Runs on a background queue so a slow /bin/launchctl invocation doesn't block
-    /// the main thread.
-    private func reloadLaunchdJob() {
-        let plistPath = Config.launchAgentPath
-        DispatchQueue.global(qos: .userInitiated).async {
-            let uid = String(getuid())
-            let target = "gui/\(uid)/\(Config.launchAgentLabel)"
-            let domain = "gui/\(uid)"
-            // bootout is idempotent — succeeds or fails benignly if the job isn't loaded.
-            // It also terminates the existing launchd-managed instance if one exists,
-            // which is fine: we're about to bootstrap a fresh one with the new plist.
-            Self.runLaunchctl(["bootout", target])
-            // Brief pause so launchd fully releases the old job state before bootstrap.
-            usleep(200_000)
-            Self.runLaunchctl(["bootstrap", domain, plistPath])
-        }
-    }
+		// Reload in launchd if:
+		//  - plist content actually changed (upgrade case), OR
+		//  - we're not currently running as the launchd-managed instance (post-install or first manual launch — we want launchd to take ownership so future crashes / wake-from-sleep get auto-restarted by KeepAlive).
+		if plistChanged || !Config.isLaunchdManaged {
+			reloadLaunchdJob()
+		}
+	}
 
-    private static func runLaunchctl(_ args: [String]) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = args
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-            p.waitUntilExit()
-            KLog.log("[Config] launchctl \(args.joined(separator: " ")) exit=\(p.terminationStatus)")
-        } catch {
-            KLog.log("[Config] launchctl invocation failed: \(error)")
-        }
-    }
+	/// bootout + bootstrap the LaunchAgent so launchd picks up the latest plist *and* spawns a managed instance.
+	/// The managed instance will hit our single-instance lock and trigger handoff (see `acquireLockFile` in KonnectMacApp.swift).
+	///
+	/// Runs on a background queue so a slow /bin/launchctl invocation doesn't block the main thread.
+	private func reloadLaunchdJob() {
+		let plistPath = Config.launchAgentPath
+		DispatchQueue.global(qos: .userInitiated).async {
+			let uid = String(getuid())
+			let target = "gui/\(uid)/\(Config.launchAgentLabel)"
+			let domain = "gui/\(uid)"
+			// bootout is idempotent — succeeds or fails benignly if the job isn't loaded.
+			// It also terminates the existing launchd-managed instance if one exists, which is fine: we're about to bootstrap a fresh one with the new plist.
+			Self.runLaunchctl(["bootout", target])
+			// Brief pause so launchd fully releases the old job state before bootstrap.
+			usleep(200_000)
+			Self.runLaunchctl(["bootstrap", domain, plistPath])
+		}
+	}
 
-    private func removeLaunchAgent() {
-        let path = Config.launchAgentPath
-        // Unload from launchd (terminates the managed instance) and delete the plist.
-        DispatchQueue.global(qos: .background).async {
-            let uid = String(getuid())
-            Self.runLaunchctl(["bootout", "gui/\(uid)/\(Config.launchAgentLabel)"])
-            try? FileManager.default.removeItem(atPath: path)
-            KLog.log("[Config] LaunchAgent unloaded and removed")
-        }
-    }
+	private static func runLaunchctl(_ args: [String]) {
+		let p = Process()
+		p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+		p.arguments = args
+		p.standardOutput = FileHandle.nullDevice
+		p.standardError = FileHandle.nullDevice
+		do {
+			try p.run()
+			p.waitUntilExit()
+			KLog.log("[Config] launchctl \(args.joined(separator: " ")) exit=\(p.terminationStatus)")
+		} catch {
+			KLog.log("[Config] launchctl invocation failed: \(error)")
+		}
+	}
 
-    /// Sync login item state on launch. Always rewrites the plist when content has
-    /// drifted from what's on disk, and re-bootstraps in launchd when the running
-    /// process isn't the launchd-managed one — this is what enables the running app
-    /// to be auto-restarted by launchd after a crash / sleep-related death.
-    func syncLoginItemStatus() {
-        if autoStart {
-            writeAndReloadLaunchAgent()
-        } else if FileManager.default.fileExists(atPath: Config.launchAgentPath) {
-            KLog.log("[Config] LaunchAgent exists but autoStart=false. Removing.")
-            removeLaunchAgent()
-        }
-    }
+	private func removeLaunchAgent() {
+		let path = Config.launchAgentPath
+		// Unload from launchd (terminates the managed instance) and delete the plist.
+		DispatchQueue.global(qos: .background).async {
+			let uid = String(getuid())
+			Self.runLaunchctl(["bootout", "gui/\(uid)/\(Config.launchAgentLabel)"])
+			try? FileManager.default.removeItem(atPath: path)
+			KLog.log("[Config] LaunchAgent unloaded and removed")
+		}
+	}
+
+	/// Sync login item state on launch.
+	/// Always rewrites the plist when content has drifted from what's on disk, and re-bootstraps in launchd when the running process isn't the launchd-managed one — this is what enables the running app to be auto-restarted by launchd after a crash / sleep-related death.
+	func syncLoginItemStatus() {
+		if autoStart {
+			writeAndReloadLaunchAgent()
+		} else if FileManager.default.fileExists(atPath: Config.launchAgentPath) {
+			KLog.log("[Config] LaunchAgent exists but autoStart=false. Removing.")
+			removeLaunchAgent()
+		}
+	}
 }

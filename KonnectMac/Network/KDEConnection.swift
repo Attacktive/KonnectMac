@@ -3,467 +3,542 @@ import os
 import Security
 
 class KDEConnection {
-    private var _fd: Int32 = -1
-    let host: String
-    let port: UInt16
-    let isIncoming: Bool
-    var remoteDeviceId: String?
-    private var _running = false
-    private var _tlsEstablished = false
-    private var _lastPacketTime = Date()
-    // Lock ordering: pendingWriteLock -> stateLock (never acquire stateLock then pendingWriteLock)
-    private let stateLock = OSAllocatedUnfairLock(initialState: ())
-    private var sslContext: SSLContext?
+	private var _fd: Int32 = -1
+	let host: String
+	let port: UInt16
+	let isIncoming: Bool
+	var remoteDeviceId: String?
+	private var _running = false
+	private var _tlsEstablished = false
+	private var _lastPacketTime = Date()
+	// Lock ordering: pendingWriteLock -> stateLock (never acquire stateLock then pendingWriteLock)
+	private let stateLock = OSAllocatedUnfairLock(initialState: ())
+	private var sslContext: SSLContext?
 
-    var fd: Int32 {
-        get { stateLock.withLock { _fd } }
-        set { stateLock.withLock { _fd = newValue } }
-    }
+	var fd: Int32 {
+		get { stateLock.withLock { _fd } }
 
-    var running: Bool {
-        get { stateLock.withLock { _running } }
-        set { stateLock.withLock { _running = newValue } }
-    }
+		set { stateLock.withLock { _fd = newValue } }
+	}
 
-    var tlsEstablished: Bool {
-        get { stateLock.withLock { _tlsEstablished } }
-        set { stateLock.withLock { _tlsEstablished = newValue } }
-    }
+	var running: Bool {
+		get { stateLock.withLock { _running } }
 
-    var lastPacketTime: Date {
-        get { stateLock.withLock { _lastPacketTime } }
-        set { stateLock.withLock { _lastPacketTime = newValue } }
-    }
-    private var sslFdPtr: UnsafeMutablePointer<Int32>?
-    private var readBuffer = Data()
-    private var pendingWriteData = Data()
-    private let pendingWriteLock = NSLock()
-    private var disconnectOnce = false
-    private let queue = DispatchQueue(label: "kdeconnection", qos: .userInitiated)
-    /// Per-connection TLS identity. Held for the lifetime of this KDEConnection so the
-    /// underlying private keychain survives until SSLClose has fully released the cert/key
-    /// references. See the doc on `CertificateManager.TransferIdentity` for why we
-    /// can't share the cached SecIdentity across multiple SSLContexts (it gets into a
-    /// state SecureTransport never recovers from after sleep/wake or repeated handshakes).
-    private var transferIdentity: CertificateManager.TransferIdentity?
+		set { stateLock.withLock { _running = newValue } }
+	}
 
-    var onIdentityReceived: ((NetworkPacket) -> Void)?
-    var onTLSReady: (() -> Void)?
-    var onPacketReceived: ((NetworkPacket) -> Void)?
-    var onDisconnected: (() -> Void)?
-    var tlsSetupRunner: ((Bool) -> Bool)?
-    // TCP keepalive handles connection liveness — no app-level pings needed
+	var tlsEstablished: Bool {
+		get { stateLock.withLock { _tlsEstablished } }
 
-    deinit {
-        // Safety net: if connectionLoop never ran (object deallocated before queue executes),
-        // clean up any remaining fd and SSL resources.
-        if _fd >= 0 { Darwin.close(_fd); _fd = -1 }
-        // Order matters: SSLContext must be released BEFORE the TransferIdentity (whose
-        // deinit deletes the underlying keychain). Setting sslContext = nil drops our
-        // strong reference, which lets SecureTransport release its hold on the cert/key
-        // before the keychain disappears.
-        if let ctx = sslContext { SSLClose(ctx); sslContext = nil }
-        sslFdPtr?.deallocate()
-        transferIdentity = nil
-    }
+		set { stateLock.withLock { _tlsEstablished = newValue } }
+	}
 
-    init(host: String, port: UInt16, isIncoming: Bool) {
-        self.host = host
-        self.port = port
-        self.isIncoming = isIncoming
-    }
+	var lastPacketTime: Date {
+		get { stateLock.withLock { _lastPacketTime } }
 
-    init(fd: Int32, host: String, port: UInt16, isIncoming: Bool) {
-        self._fd = fd
-        self.host = host
-        self.port = port
-        self.isIncoming = isIncoming
-    }
+		set { stateLock.withLock { _lastPacketTime = newValue } }
+	}
 
-    func send(_ packet: NetworkPacket) {
-        guard let data = packet.serialize() else { return }
-        pendingWriteLock.lock()
-        // Cap write queue at 1MB to prevent unbounded memory growth
-        if pendingWriteData.count + data.count > 1_048_576 {
-            pendingWriteLock.unlock()
-            KLog.log("[KDEConn] Write queue full (>1MB), dropping packet")
-            return
-        }
-        pendingWriteData.append(data)
-        pendingWriteLock.unlock()
-    }
+	private var sslFdPtr: UnsafeMutablePointer<Int32>?
+	private var readBuffer = Data()
+	private var pendingWriteData = Data()
+	private let pendingWriteLock = NSLock()
+	private var disconnectOnce = false
+	private let queue = DispatchQueue(label: "kdeconnection", qos: .userInitiated)
+	/// Per-connection TLS identity.
+	/// Held for the lifetime of this KDEConnection so the underlying private keychain survives until SSLClose has fully released the cert/key references.
+	/// See the doc on `CertificateManager.TransferIdentity` for why we can't share the cached SecIdentity across multiple SSLContexts (it gets into a state SecureTransport never recovers from after sleep/wake or repeated handshakes).
+	private var transferIdentity: CertificateManager.TransferIdentity?
 
-    var cachedIdentityData: Data?
+	var onIdentityReceived: ((NetworkPacket) -> Void)?
+	var onTLSReady: (() -> Void)?
+	var onPacketReceived: ((NetworkPacket) -> Void)?
+	var onDisconnected: (() -> Void)?
+	var tlsSetupRunner: ((Bool) -> Bool)?
+	// TCP keepalive handles connection liveness — no app-level pings needed
 
-    func connectAndRun() {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self._fd = socket(AF_INET, SOCK_STREAM, 0)
-            guard self._fd >= 0 else { return }
+	// MARK: - Lifecycle
 
-            SocketHelpers.enableNoDelay(fd: self._fd)
+	deinit {
+		// Safety net: if connectionLoop never ran (object deallocated before queue executes), clean up any remaining fd and SSL resources.
+		if _fd >= 0 {
+			Darwin.close(_fd); _fd = -1
+		}
 
-            // Set connect timeout to 10 seconds to prevent blocking GCD threads
-            // on unreachable hosts (default TCP timeout is ~75 seconds)
-            var connectTimeout = timeval(tv_sec: 10, tv_usec: 0)
-            setsockopt(self._fd, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
+		// Order matters: SSLContext must be released BEFORE the TransferIdentity (whose deinit deletes the underlying keychain).
+		// Setting sslContext = nil drops our strong reference, which lets SecureTransport release its hold on the cert/key before the keychain disappears.
+		if let ctx = sslContext {
+			SSLClose(ctx); sslContext = nil
+		}
 
-            var addr = sockaddr_in()
-            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = self.port.bigEndian
-            guard inet_pton(AF_INET, self.host, &addr.sin_addr) == 1 else {
-                KLog.log("[KDEConn] Invalid IP: \(self.host)")
-                Darwin.close(self._fd)
-                self._fd = -1
-                return
-            }
+		sslFdPtr?.deallocate()
+		transferIdentity = nil
+	}
 
-            let result = withUnsafePointer(to: &addr) { ptr in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.connect(self._fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                }
-            }
-            guard result == 0 else {
-                KLog.log("[KDEConn] Connect to \(self.host):\(self.port) failed: \(String(cString: strerror(errno)))")
-                Darwin.close(self._fd)
-                self._fd = -1
-                DispatchQueue.main.async { [weak self] in
-                    self?.onDisconnected?()
-                }
-                return
-            }
+	init(host: String, port: UInt16, isIncoming: Bool) {
+		self.host = host
+		self.port = port
+		self.isIncoming = isIncoming
+	}
 
-            self.enableKeepAlive()
-            self._running = true
-            self.connectionLoop()
-        }
-    }
+	init(fd: Int32, host: String, port: UInt16, isIncoming: Bool) {
+		self._fd = fd
+		self.host = host
+		self.port = port
+		self.isIncoming = isIncoming
+	}
 
-    func startIncoming() {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self.enableKeepAlive()
-            self._running = true
-            self.connectionLoop()
-        }
-    }
+	// MARK: - Packet Sending
 
-    private func enableKeepAlive() {
-        SocketHelpers.enableControlKeepAlive(fd: _fd)
-    }
+	func send(_ packet: NetworkPacket) {
+		guard let data = packet.serialize() else {
+			return
+		}
 
-    private func connectionLoop() {
-        defer { finishConnectionLoop() }
+		pendingWriteLock.lock()
+		// Cap write queue at 1MB to prevent unbounded memory growth
+		if pendingWriteData.count + data.count > 1_048_576 {
+			pendingWriteLock.unlock()
+			KLog.log("[KDEConn] Write queue full (>1MB), dropping packet")
 
-        if !isIncoming {
-            // Outgoing: send identity over raw TCP, then TLS
-            guard let data = cachedIdentityData else {
-                disconnect()
-                return
-            }
-            _ = rawWrite(data)
-            KLog.log("[KDEConn] Sent identity to \(host):\(port)")
-        } else {
-            // Incoming: read phone's identity over raw TCP
-            var rawTimeout = timeval(tv_sec: 5, tv_usec: 0)
-            setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &rawTimeout, socklen_t(MemoryLayout<timeval>.size))
-            if let identityData = readRawLine() {
-                if let packet = NetworkPacket.deserialize(from: identityData) {
-                    remoteDeviceId = packet.body["deviceId"]?.value as? String
-                    KLog.log("[KDEConn] Received identity from \(remoteDeviceId ?? "unknown") at \(host)")
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.onIdentityReceived?(packet)
-                    }
-                }
-            }
-        }
+			return
+		}
 
-        // KDE Connect crossover rule: TCP server = TLS client, TCP client = TLS server
-        // For incoming connections (we are TCP server) → we are TLS client
-        // For outgoing connections (we are TCP client) → we are TLS server
-        let isTLSServer = !isIncoming
+		pendingWriteData.append(data)
+		pendingWriteLock.unlock()
+	}
 
-        // Setup TLS
-        let tlsConfigured = tlsSetupRunner?(isTLSServer) ?? setupTLS(isServer: isTLSServer)
-        guard tlsConfigured else {
-            KLog.log("[KDEConn] TLS setup failed for \(host)")
-            return
-        }
+	var cachedIdentityData: Data?
 
-        // Set socket timeout for handshake (10s max)
-        var handshakeTimeout = timeval(tv_sec: 10, tv_usec: 0)
-        setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
+	// MARK: - Connection Setup
 
-        // Perform TLS handshake. TLSHelpers.runHandshake handles the retry-set
-        // (errSSLWouldBlock, errSSLPeerAuthCompleted, errSSLClientCertRequested)
-        // and logs failures with the role label.
-        KLog.log("[KDEConn] Starting TLS handshake with \(host) (server=\(isTLSServer))")
-        guard TLSHelpers.runHandshake(sslContext!, role: "KDEConn") else {
-            return
-        }
+	func connectAndRun() {
+		queue.async { [weak self] in
+			guard let self = self else {
+				return
+			}
 
-        _tlsEstablished = true
-        _lastPacketTime = Date()  // Reset idle timer from TLS establishment, not connection creation
-        KLog.log("[KDEConn] TLS established with \(host) (server=\(isTLSServer))")
+			self._fd = socket(AF_INET, SOCK_STREAM, 0)
+			guard self._fd >= 0 else {
+				return
+			}
 
-        // Send identity over TLS
-        if let data = cachedIdentityData, let ctx = sslContext {
-            var totalWritten = 0
-            var writeRetries = 0
-            data.withUnsafeBytes { buf in
-                guard let baseAddr = buf.baseAddress else { return }
-                while totalWritten < data.count {
-                    var written = 0
-                    let status = SSLWrite(ctx, baseAddr + totalWritten, data.count - totalWritten, &written)
-                    if written > 0 { totalWritten += written; writeRetries = 0 }
-                    if status == errSSLWouldBlock {
-                        writeRetries += 1
-                        if writeRetries > 5000 {
-                            KLog.log("[KDEConn] SSLWrite stuck sending identity, aborting")
-                            break
-                        }
-                        usleep(1000)
-                        continue
-                    }
-                    if status != errSecSuccess {
-                        KLog.log("[KDEConn] SSLWrite error: \(status) (wrote \(totalWritten)/\(data.count))")
-                        break
-                    }
-                }
-            }
-            KLog.log("[KDEConn] Sent identity over TLS (\(totalWritten) bytes)")
-        }
+			SocketHelpers.enableNoDelay(fd: self._fd)
 
-        // Set socket timeout for read loop
-        var timeout = timeval(tv_sec: 0, tv_usec: 500000)
-        setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+			// Set connect timeout to 10 seconds to prevent blocking GCD threads on unreachable hosts (default TCP timeout is ~75 seconds)
+			var connectTimeout = timeval(tv_sec: 10, tv_usec: 0)
+			setsockopt(self._fd, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
 
-        DispatchQueue.main.async { [weak self] in
-            self?.onTLSReady?()
-        }
+			var addr = sockaddr_in()
+			addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+			addr.sin_family = sa_family_t(AF_INET)
+			addr.sin_port = self.port.bigEndian
+			guard inet_pton(AF_INET, self.host, &addr.sin_addr) == 1 else {
+				KLog.log("[KDEConn] Invalid IP: \(self.host)")
+				Darwin.close(self._fd)
+				self._fd = -1
 
-        // Main read loop — use locked `running` getter to prevent data race with disconnect()
-        while running {
-            drainWriteQueue()
+				return
+			}
 
-            if let packet = readTLSPacket() {
-                _lastPacketTime = Date()
-                if packet.type == "kdeconnect.identity" {
-                    remoteDeviceId = packet.body["deviceId"]?.value as? String
-                    KLog.log("[KDEConn] Received TLS identity from \(remoteDeviceId ?? "unknown")")
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.onIdentityReceived?(packet)
-                    }
-                } else {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.onPacketReceived?(packet)
-                    }
-                }
-            } else {
-                // readTLSPacket returned nil — timeout, skip, or error
-                let idleSincePacket = Date().timeIntervalSince(_lastPacketTime)
-                // Log every 15s of idle to track connection health
-                if Int(idleSincePacket) % 15 == 0 && idleSincePacket > 1 {
-                    KLog.log("[KDEConn] Idle \(Int(idleSincePacket))s on \(host) (running=\(_running), fd=\(_fd))")
-                }
-                // TCP keepalive (60s idle, 15s probe, 4 retries) detects dead connections
-                // at the OS level. When the phone truly dies, TCP probes fail and SSLRead
-                // returns an error — which our read loop handles above.
-                // We do NOT kill the connection based on app-level idle time because
-                // a paired phone can be legitimately idle for minutes (screen off, no activity).
-            }
-        }
+			let result = withUnsafePointer(to: &addr) { ptr in
+				ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+					Darwin.connect(self._fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+				}
+			}
 
-    }
+			guard result == 0 else {
+				KLog.log("[KDEConn] Connect to \(self.host):\(self.port) failed: \(String(cString: strerror(errno)))")
+				Darwin.close(self._fd)
+				self._fd = -1
+				DispatchQueue.main.async { [weak self] in
+					self?.onDisconnected?()
+				}
 
-    private func finishConnectionLoop() {
-        _running = false
-        // SSLClose must happen BEFORE fd close so TLS close_notify is sent on valid socket
-        cleanupSSL()
-        let currentFd = _fd
-        _fd = -1
-        if currentFd >= 0 { Darwin.close(currentFd) }
-        DispatchQueue.main.async { [weak self] in
-            self?.onDisconnected?()
-        }
-    }
+				return
+			}
 
-    private func setupTLS(isServer: Bool) -> Bool {
-        guard let ctx = SSLCreateContext(nil, isServer ? .serverSide : .clientSide, .streamType) else { return false }
-        sslContext = ctx
+			self.enableKeepAlive()
+			self._running = true
+			self.connectionLoop()
+		}
+	}
 
-        // Allocate fdPtr that the connection holds for its lifetime. `disconnect()`
-        // sets `sslFdPtr.pointee = -1` to short-circuit any in-flight SSL I/O, and
-        // `cleanupSSL()` deallocates it. This lifetime story is critical and unchanged.
-        let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        fdPtr.pointee = _fd
-        sslFdPtr = fdPtr
+	func startIncoming() {
+		queue.async { [weak self] in
+			guard let self = self else {
+				return
+			}
 
-        // Use a fresh single-use SecIdentity for THIS connection's TLS handshake.
-        //
-        // The cached identity from getOrCreateIdentity() gets into a broken state after
-        // sleep/wake (SecureTransport's per-identity internal state ends up referencing
-        // a stale snapshot of the keychain) — every subsequent handshake then fails
-        // with errSSLInternal (-9810) until the app restarts. That's the bug that
-        // blocked re-pairing after the phone unpaired and the Mac slept overnight:
-        // the control-channel TLS could never re-establish, so the pair packets to
-        // re-add the cert never got exchanged.
-        //
-        // The TransferIdentity owns its own private keychain and is held by `self` for
-        // the entire lifetime of this KDEConnection — released (and the keychain
-        // unlinked) when the connection ends.
-        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
-            KLog.log("[KDEConn] Could not create fresh TLS identity")
-            return false
-        }
-        transferIdentity = transferId
+			self.enableKeepAlive()
+			self._running = true
+			self.connectionLoop()
+		}
+	}
 
-        TLSHelpers.configure(ctx, TLSContextConfig(
-            isServer: isServer,
-            identity: transferId.identity,
-            fdPtr: fdPtr
-        ))
-        return true
-    }
+	private func enableKeepAlive() {
+		SocketHelpers.enableControlKeepAlive(fd: _fd)
+	}
 
-    private func readTLSPacket() -> NetworkPacket? {
-        guard let ctx = sslContext, _running else { return nil }
+	// MARK: - Connection Loop
 
-        var buffer = [UInt8](repeating: 0, count: 65536)
-        var bytesRead = 0
-        let status = SSLRead(ctx, &buffer, buffer.count, &bytesRead)
+	private func connectionLoop() {
+		defer { finishConnectionLoop() }
 
-        if bytesRead > 0 {
-            readBuffer.append(Data(buffer[0..<bytesRead]))
-            KLog.log("[KDEConn] SSLRead: \(bytesRead) bytes (status=\(status), bufferTotal=\(readBuffer.count))", level: .debug)
-        }
+		if !isIncoming {
+			// Outgoing: send identity over raw TCP, then TLS
+			guard let data = cachedIdentityData else {
+				disconnect()
 
-        if readBuffer.count > 1_048_576 {
-            KLog.log("[KDEConn] Read buffer exceeded max size (\(readBuffer.count) bytes) from \(host), disconnecting", level: .error)
-            _running = false
-            return nil
-        }
+				return
+			}
 
-        if status != errSecSuccess && status != errSSLWouldBlock {
-            if status == errSSLClosedGraceful || status == -9806 {
-                KLog.log("[KDEConn] Peer closed connection to \(host)")
-            } else {
-                KLog.log("[KDEConn] SSLRead error: \(status) for \(host)")
-            }
-            _running = false
-            return nil
-        }
+			_ = rawWrite(data)
+			KLog.log("[KDEConn] Sent identity to \(host):\(port)")
+		} else {
+			// Incoming: read phone's identity over raw TCP
+			var rawTimeout = timeval(tv_sec: 5, tv_usec: 0)
+			setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &rawTimeout, socklen_t(MemoryLayout<timeval>.size))
+			if let identityData = readRawLine() {
+				if let packet = NetworkPacket.deserialize(from: identityData) {
+					remoteDeviceId = packet.body["deviceId"]?.value as? String
+					KLog.log("[KDEConn] Received identity from \(remoteDeviceId ?? "unknown") at \(host)")
+					DispatchQueue.main.async { [weak self] in
+						guard let self = self else {
+							return
+						}
 
-        if let idx = readBuffer.firstIndex(of: 0x0A) {
-            let line = Data(readBuffer[readBuffer.startIndex..<idx])
-            readBuffer = Data(readBuffer[(idx + 1)...])
-            if let packet = NetworkPacket.deserialize(from: line) {
-                return packet
-            }
-            // Invalid JSON — skip this line, don't kill connection
-            KLog.log("[KDEConn] Skipped invalid packet (\(line.count) bytes)")
-        }
+						self.onIdentityReceived?(packet)
+					}
+				}
+			}
+		}
 
-        return nil
-    }
+		// KDE Connect crossover rule: TCP server = TLS client, TCP client = TLS server
+		// For incoming connections (we are TCP server) → we are TLS client
+		// For outgoing connections (we are TCP client) → we are TLS server
+		let isTLSServer = !isIncoming
 
-    private func drainWriteQueue() {
-        pendingWriteLock.lock()
-        guard !pendingWriteData.isEmpty else {
-            pendingWriteLock.unlock()
-            return
-        }
-        let data = pendingWriteData
-        pendingWriteData = Data()
-        pendingWriteLock.unlock()
+		// Setup TLS
+		let tlsConfigured = tlsSetupRunner?(isTLSServer) ?? setupTLS(isServer: isTLSServer)
+		guard tlsConfigured else {
+			KLog.log("[KDEConn] TLS setup failed for \(host)")
 
-        guard let ctx = sslContext else { return }
-        var totalWritten = 0
-        var writeRetries = 0
-        data.withUnsafeBytes { buf in
-            guard let baseAddr = buf.baseAddress else { return }
-            while totalWritten < data.count {
-                var written = 0
-                let status = SSLWrite(ctx, baseAddr + totalWritten, data.count - totalWritten, &written)
-                if written > 0 { totalWritten += written; writeRetries = 0 }
-                if status == errSSLWouldBlock {
-                    writeRetries += 1
-                    if writeRetries > 5000 {
-                        KLog.log("[KDEConn] SSLWrite stuck for 5s, aborting (wrote \(totalWritten)/\(data.count))")
-                        break
-                    }
-                    usleep(1000)
-                    continue
-                }
-                if status != errSecSuccess {
-                    KLog.log("[KDEConn] SSLWrite error: \(status) (wrote \(totalWritten)/\(data.count))")
-                    break
-                }
-            }
-        }
-    }
+			return
+		}
 
-    private func rawWrite(_ data: Data) -> Int {
-        return data.withUnsafeBytes { buf in
-            Darwin.write(_fd, buf.baseAddress, data.count)
-        }
-    }
+		// Set socket timeout for handshake (10s max)
+		var handshakeTimeout = timeval(tv_sec: 10, tv_usec: 0)
+		setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
+		setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &handshakeTimeout, socklen_t(MemoryLayout<timeval>.size))
 
-    private func readRawLine() -> Data? {
-        var buffer = [UInt8](repeating: 0, count: 1)
-        var result = Data()
-        let deadline = Date().addingTimeInterval(5)
+		// Perform TLS handshake.
+		// TLSHelpers.runHandshake handles the retry-set (errSSLWouldBlock, errSSLPeerAuthCompleted, errSSLClientCertRequested) and logs failures with the role label.
+		KLog.log("[KDEConn] Starting TLS handshake with \(host) (server=\(isTLSServer))")
+		guard TLSHelpers.runHandshake(sslContext!, role: "KDEConn") else {
+			return
+		}
 
-        while Date() < deadline {
-            let n = Darwin.read(_fd, &buffer, 1)
-            if n <= 0 { break }
-            if buffer[0] == 0x0A { return result }
-            result.append(buffer[0])
-            if result.count > 65536 { break }
-        }
-        return nil
-    }
+		_tlsEstablished = true
+		_lastPacketTime = Date()  // Reset idle timer from TLS establishment, not connection creation
+		KLog.log("[KDEConn] TLS established with \(host) (server=\(isTLSServer))")
 
-    func disconnect() {
-        pendingWriteLock.lock()
-        if disconnectOnce { pendingWriteLock.unlock(); return }
-        disconnectOnce = true
-        pendingWriteLock.unlock()
+		// Send identity over TLS
+		if let data = cachedIdentityData, let ctx = sslContext {
+			var totalWritten = 0
+			var writeRetries = 0
+			data.withUnsafeBytes { buf in
+				guard let baseAddr = buf.baseAddress else {
+					return
+				}
+				while totalWritten < data.count {
+					var written = 0
+					let status = SSLWrite(ctx, baseAddr + totalWritten, data.count - totalWritten, &written)
+					if written > 0 {
+						totalWritten += written; writeRetries = 0
+					}
 
-        // Only signal the connection loop to stop — do NOT touch the fd or fdPtr here.
-        // The connectionLoop owns the fd lifecycle: it sees running=false, falls out of
-        // its read loop (SO_RCVTIMEO bounds this to ≤500ms), then calls cleanupSSL()
-        // which runs SSLClose() so the TLS close-notify alert reaches the peer over
-        // the still-valid socket, *then* closes the fd.
-        //
-        // Earlier versions invalidated `sslFdPtr.pointee = -1` here as a "panic button"
-        // to make SSL callbacks fail with EBADF and force SSLRead to return immediately.
-        // That broke close-notify on every graceful disconnect — the SSLClose write
-        // callback fired against an invalid fd. Without close-notify the phone only
-        // notices the drop via TCP RST/keepalive, which is much slower and during a
-        // post-update relaunch confused it into sending pair=false (unpair-by-remote).
-        // The 500ms RCVTIMEO is plenty fast to exit the loop the regular way.
-        running = false
-    }
+					if status == errSSLWouldBlock {
+						writeRetries += 1
+						if writeRetries > 5000 {
+							KLog.log("[KDEConn] SSLWrite stuck sending identity, aborting")
+							break
+						}
 
-    private func cleanupSSL() {
-        if let ctx = sslContext { SSLClose(ctx) }
-        sslFdPtr?.deallocate()
-        sslFdPtr = nil
-        sslContext = nil
-        _tlsEstablished = false
-        // Release the per-connection TLS identity AFTER the SSLContext has been dropped,
-        // so the underlying keychain isn't unlinked while SecureTransport still holds
-        // cert/key references to it.
-        transferIdentity = nil
-    }
+						usleep(1000)
+						continue
+					}
 
-    func getPeerCertificate() -> SecCertificate? {
-        guard let ctx = sslContext else { return nil }
-        return TLSHelpers.copyPeerLeafCertificate(ctx)
-    }
+					if status != errSecSuccess {
+						KLog.log("[KDEConn] SSLWrite error: \(status) (wrote \(totalWritten)/\(data.count))")
+						break
+					}
+				}
+			}
+
+			KLog.log("[KDEConn] Sent identity over TLS (\(totalWritten) bytes)")
+		}
+
+		// Set socket timeout for read loop
+		var timeout = timeval(tv_sec: 0, tv_usec: 500000)
+		setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+		DispatchQueue.main.async { [weak self] in
+			self?.onTLSReady?()
+		}
+
+		// Main read loop — use locked `running` getter to prevent data race with disconnect()
+		while running {
+			drainWriteQueue()
+
+			if let packet = readTLSPacket() {
+				_lastPacketTime = Date()
+				if packet.type == "kdeconnect.identity" {
+					remoteDeviceId = packet.body["deviceId"]?.value as? String
+					KLog.log("[KDEConn] Received TLS identity from \(remoteDeviceId ?? "unknown")")
+					DispatchQueue.main.async { [weak self] in
+						guard let self = self else {
+							return
+						}
+
+						self.onIdentityReceived?(packet)
+					}
+				} else {
+					DispatchQueue.main.async { [weak self] in
+						self?.onPacketReceived?(packet)
+					}
+				}
+			} else {
+				// readTLSPacket returned nil — timeout, skip, or error
+				let idleSincePacket = Date().timeIntervalSince(_lastPacketTime)
+				// Log every 15s of idle to track connection health
+				if Int(idleSincePacket) % 15 == 0 && idleSincePacket > 1 {
+					KLog.log("[KDEConn] Idle \(Int(idleSincePacket))s on \(host) (running=\(_running), fd=\(_fd))")
+				}
+
+				// TCP keepalive (60s idle, 15s probe, 4 retries) detects dead connections at the OS level.
+				// When the phone truly dies, TCP probes fail and SSLRead returns an error — which our read loop handles above.
+				// We do NOT kill the connection based on app-level idle time because a paired phone can be legitimately idle for minutes (screen off, no activity).
+			}
+		}
+
+	}
+
+	private func finishConnectionLoop() {
+		_running = false
+		// SSLClose must happen BEFORE fd close so TLS close_notify is sent on valid socket
+		cleanupSSL()
+		let currentFd = _fd
+		_fd = -1
+		if currentFd >= 0 {
+			Darwin.close(currentFd)
+		}
+
+		DispatchQueue.main.async { [weak self] in
+			self?.onDisconnected?()
+		}
+	}
+
+	// MARK: - TLS and Packet I/O
+
+	private func setupTLS(isServer: Bool) -> Bool {
+		guard let ctx = SSLCreateContext(nil, isServer ? .serverSide : .clientSide, .streamType) else {
+			return false
+		}
+
+		sslContext = ctx
+
+		// Allocate fdPtr that the connection holds for its lifetime. `disconnect()` sets `sslFdPtr.pointee = -1` to short-circuit any in-flight SSL I/O, and `cleanupSSL()` deallocates it.
+		// This lifetime story is critical and unchanged.
+		let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+		fdPtr.pointee = _fd
+		sslFdPtr = fdPtr
+
+		// Use a fresh single-use SecIdentity for THIS connection's TLS handshake.
+		//
+		// The cached identity from getOrCreateIdentity() gets into a broken state after sleep/wake (SecureTransport's per-identity internal state ends up referencing a stale snapshot of the keychain) — every subsequent handshake then fails with errSSLInternal (-9810) until the app restarts.
+		// That's the bug that blocked re-pairing after the phone unpaired and the Mac slept overnight: the control-channel TLS could never re-establish, so the pair packets to re-add the cert never got exchanged.
+		//
+		// The TransferIdentity owns its own private keychain and is held by `self` for the entire lifetime of this KDEConnection — released (and the keychain unlinked) when the connection ends.
+		guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+			KLog.log("[KDEConn] Could not create fresh TLS identity")
+
+			return false
+		}
+
+		transferIdentity = transferId
+
+		TLSHelpers.configure(ctx, TLSContextConfig(isServer: isServer, identity: transferId.identity, fdPtr: fdPtr))
+
+		return true
+	}
+
+	private func readTLSPacket() -> NetworkPacket? {
+		guard let ctx = sslContext, _running else {
+			return nil
+		}
+
+		var buffer = [UInt8](repeating: 0, count: 65536)
+		var bytesRead = 0
+		let status = SSLRead(ctx, &buffer, buffer.count, &bytesRead)
+
+		if bytesRead > 0 {
+			readBuffer.append(Data(buffer[0..<bytesRead]))
+			KLog.log("[KDEConn] SSLRead: \(bytesRead) bytes (status=\(status), bufferTotal=\(readBuffer.count))", level: .debug)
+		}
+
+		if readBuffer.count > 1_048_576 {
+			KLog.log("[KDEConn] Read buffer exceeded max size (\(readBuffer.count) bytes) from \(host), disconnecting", level: .error)
+			_running = false
+
+			return nil
+		}
+
+		if status != errSecSuccess && status != errSSLWouldBlock {
+			if status == errSSLClosedGraceful || status == -9806 {
+				KLog.log("[KDEConn] Peer closed connection to \(host)")
+			} else {
+				KLog.log("[KDEConn] SSLRead error: \(status) for \(host)")
+			}
+
+			_running = false
+
+			return nil
+		}
+
+		if let idx = readBuffer.firstIndex(of: 0x0A) {
+			let line = Data(readBuffer[readBuffer.startIndex..<idx])
+			readBuffer = Data(readBuffer[(idx + 1)...])
+			if let packet = NetworkPacket.deserialize(from: line) {
+				return packet
+			}
+
+			// Invalid JSON — skip this line, don't kill connection
+			KLog.log("[KDEConn] Skipped invalid packet (\(line.count) bytes)")
+		}
+
+		return nil
+	}
+
+	private func drainWriteQueue() {
+		pendingWriteLock.lock()
+		guard !pendingWriteData.isEmpty else {
+			pendingWriteLock.unlock()
+
+			return
+		}
+
+		let data = pendingWriteData
+		pendingWriteData = Data()
+		pendingWriteLock.unlock()
+
+		guard let ctx = sslContext else {
+			return
+		}
+
+		var totalWritten = 0
+		var writeRetries = 0
+		data.withUnsafeBytes { buf in
+			guard let baseAddr = buf.baseAddress else {
+				return
+			}
+			while totalWritten < data.count {
+				var written = 0
+				let status = SSLWrite(ctx, baseAddr + totalWritten, data.count - totalWritten, &written)
+				if written > 0 {
+					totalWritten += written; writeRetries = 0
+				}
+
+				if status == errSSLWouldBlock {
+					writeRetries += 1
+					if writeRetries > 5000 {
+						KLog.log("[KDEConn] SSLWrite stuck for 5s, aborting (wrote \(totalWritten)/\(data.count))")
+						break
+					}
+
+					usleep(1000)
+					continue
+				}
+
+				if status != errSecSuccess {
+					KLog.log("[KDEConn] SSLWrite error: \(status) (wrote \(totalWritten)/\(data.count))")
+					break
+				}
+			}
+		}
+	}
+
+	private func rawWrite(_ data: Data) -> Int {
+		return data.withUnsafeBytes { buf in
+			Darwin.write(_fd, buf.baseAddress, data.count)
+		}
+	}
+
+	private func readRawLine() -> Data? {
+		var buffer = [UInt8](repeating: 0, count: 1)
+		var result = Data()
+		let deadline = Date().addingTimeInterval(5)
+
+		while Date() < deadline {
+			let n = Darwin.read(_fd, &buffer, 1)
+			if n <= 0 {
+				break
+			}
+
+			if buffer[0] == 0x0A {
+				return result
+			}
+
+			result.append(buffer[0])
+			if result.count > 65536 {
+				break
+			}
+		}
+
+		return nil
+	}
+
+	// MARK: - Disconnection and Cleanup
+
+	func disconnect() {
+		pendingWriteLock.lock()
+		if disconnectOnce {
+			pendingWriteLock.unlock()
+
+			return
+		}
+
+		disconnectOnce = true
+		pendingWriteLock.unlock()
+
+		// Only signal the connection loop to stop — do NOT touch the fd or fdPtr here.
+		// The connectionLoop owns the fd lifecycle: it sees running=false, falls out of its read loop (SO_RCVTIMEO bounds this to ≤500ms), then calls cleanupSSL() which runs SSLClose() so the TLS close-notify alert reaches the peer over the still-valid socket, *then* closes the fd.
+		//
+		// Earlier versions invalidated `sslFdPtr.pointee = -1` here as a "panic button" to make SSL callbacks fail with EBADF and force SSLRead to return immediately.
+		// That broke close-notify on every graceful disconnect — the SSLClose write callback fired against an invalid fd.
+		// Without close-notify the phone only notices the drop via TCP RST/keepalive, which is much slower and during a post-update relaunch confused it into sending pair=false (unpair-by-remote).
+		// The 500ms RCVTIMEO is plenty fast to exit the loop the regular way.
+		running = false
+	}
+
+	private func cleanupSSL() {
+		if let ctx = sslContext {
+			SSLClose(ctx)
+		}
+
+		sslFdPtr?.deallocate()
+		sslFdPtr = nil
+		sslContext = nil
+		_tlsEstablished = false
+		// Release the per-connection TLS identity AFTER the SSLContext has been dropped, so the underlying keychain isn't unlinked while SecureTransport still holds cert/key references to it.
+		transferIdentity = nil
+	}
+
+	func getPeerCertificate() -> SecCertificate? {
+		guard let ctx = sslContext else {
+			return nil
+		}
+
+		return TLSHelpers.copyPeerLeafCertificate(ctx)
+	}
 }

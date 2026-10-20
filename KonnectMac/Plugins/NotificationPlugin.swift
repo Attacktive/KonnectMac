@@ -1,7 +1,7 @@
-import Foundation
-import UserNotifications
 import AppKit
+import Foundation
 import Security
+import UserNotifications
 
 /// Keeps notifications from one phone from consuming another phone's rate-limit capacity.
 struct NotificationRateLimiter {
@@ -15,10 +15,12 @@ struct NotificationRateLimiter {
 		if let window = windows[deviceId], now.timeIntervalSince(window.started) <= 1 {
 			let count = window.count + 1
 			windows[deviceId] = (started: window.started, count: count)
+
 			return count <= 10
 		}
 
 		windows[deviceId] = (started: now, count: 1)
+
 		return true
 	}
 }
@@ -30,6 +32,7 @@ struct NotificationDeliveryState {
 	mutating func activate(id: String) -> UUID {
 		let revision = UUID()
 		revisions[id] = revision
+
 		return revision
 	}
 
@@ -69,12 +72,7 @@ final class NotificationDeliveryQueue {
 		self.remove = remove
 	}
 
-	func enqueue(
-		request: UNNotificationRequest,
-		isCurrent: @escaping () -> Bool,
-		shouldRemove: @escaping () -> Bool,
-		onResult: @escaping (Error?) -> Void
-	) {
+	func enqueue(request: UNNotificationRequest, isCurrent: @escaping () -> Bool, shouldRemove: @escaping () -> Bool, onResult: @escaping (Error?) -> Void) {
 		let delivery = Delivery(request: request, isCurrent: isCurrent, shouldRemove: shouldRemove, onResult: onResult)
 		guard delivery.isCurrent() else {
 			return
@@ -82,6 +80,7 @@ final class NotificationDeliveryQueue {
 
 		if inFlight.contains(request.identifier) {
 			waiting[request.identifier] = delivery
+
 			return
 		}
 
@@ -112,6 +111,7 @@ final class NotificationDeliveryQueue {
 		// Never start the newer add until the previous one has finished.
 		if let replacement = waiting.removeValue(forKey: identifier), replacement.isCurrent() {
 			send(replacement)
+
 			return
 		}
 
@@ -124,22 +124,21 @@ final class NotificationDeliveryQueue {
 
 @MainActor
 class NotificationPlugin: PluginProtocol {
-    let device: Device
+	let device: Device
 	private let config: Config
 
-    // STATIC state — survives plugin recreation across reconnections.
-    // Without this, every reconnection wipes the dedup set (causing duplicate notifications)
-    // and the icon cache (causing re-downloads and missing icons).
-    private static var shownNotificationIds = Set<String>()
-    private static var shownNotificationOrder: [String] = []
-    private static var notificationContentHash: [String: String] = [:]
+	// STATIC state — survives plugin recreation across reconnections.
+	// Without this, every reconnection wipes the dedup set (causing duplicate notifications) and the icon cache (causing re-downloads and missing icons).
+	private static var shownNotificationIds = Set<String>()
+	private static var shownNotificationOrder: [String] = []
+	private static var notificationContentHash: [String: String] = [:]
 	private static var shownNotificationPackages: [String: String] = [:]
-    private static var iconCache: [String: String] = [:]
-    private static var pendingIconDownloads: [String: [(String?) -> Void]] = [:]
-    private static var cacheLoaded = false
-    private static var lastCacheCleanup = Date()
+	private static var iconCache: [String: String] = [:]
+	private static var pendingIconDownloads: [String: [(String?) -> Void]] = [:]
+	private static var cacheLoaded = false
+	private static var lastCacheCleanup = Date()
 
-    private static var rateLimiter = NotificationRateLimiter()
+	private static var rateLimiter = NotificationRateLimiter()
 	private static var deliveryState = NotificationDeliveryState()
 	private static let deliveryQueue = NotificationDeliveryQueue(
 		submit: { request, completion in
@@ -156,64 +155,64 @@ class NotificationPlugin: PluginProtocol {
 		}
 	)
 
-    private static let cacheDir: String = {
-        let path = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("KonnectMac/AppIcons").path
-        try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
-        return path
-    }()
+	private static let cacheDir: String = {
+		let path = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("KonnectMac/AppIcons").path
 
-    private let filteredPackages = Set([
-        "android", "com.android.systemui", "com.android.providers",
-        "com.android.settings", "com.android.vending",
-        "org.kde.kdeconnect_tp"  // Never mirror KDE Connect's own notifications (pairing dialogs, connection status)
-    ])
+		try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
 
-    private let filteredTitles = Set([
-        "USB debugging connected", "Android System", "System UI"
-    ])
+		return path
+	}()
 
-    // VoIP apps — their call notifications contain the actual caller name
-    // Used to cross-reference with telephony events that arrive without contactName
-    static let voipPackages = Set([
-        "com.whatsapp", "com.whatsapp.w4b",
-        "com.google.android.apps.meetings",   // Google Meet
-        "com.google.android.apps.tachyon",     // Google Duo / Meet calling
-        "us.zoom.videomeetings",
-        "org.telegram.messenger",
-        "com.skype.raider", "com.skype.m2",
-        "com.discord",
-        "com.microsoft.teams",
-        "com.facebook.orca",                   // Messenger
-        "com.viber.voip",
-        "com.linecorp.LINEAPP",
-    ])
+	private let filteredPackages = Set([
+		"android", "com.android.systemui", "com.android.providers",
+		"com.android.settings", "com.android.vending",
+		"org.kde.kdeconnect_tp"  // Never mirror KDE Connect's own notifications (pairing dialogs, connection status)
+	])
 
-    // Notification icon classification + rendering lives in IconRenderer (Plugins/IconRenderer.swift).
-    // NotificationPlugin still owns the cache directory; it passes `Self.cacheDir` into
-    // IconRenderer.fallbackIcon when looking up brand / fallback icons. The
-    // senderPicturePackages set has moved there too (we read it as
-    // IconRenderer.senderPicturePackages).
+	private let filteredTitles = Set([
+		"USB debugging connected", "Android System", "System UI"
+	])
 
-    init(device: Device, config: Config = .shared) {
-        self.device = device
+	// VoIP apps — their call notifications contain the actual caller name
+	// Used to cross-reference with telephony events that arrive without contactName
+	static let voipPackages = Set([
+		"com.whatsapp", "com.whatsapp.w4b",
+		"com.google.android.apps.meetings",   // Google Meet
+		"com.google.android.apps.tachyon",     // Google Duo / Meet calling
+		"us.zoom.videomeetings",
+		"org.telegram.messenger",
+		"com.skype.raider", "com.skype.m2",
+		"com.discord",
+		"com.microsoft.teams",
+		"com.facebook.orca",                   // Messenger
+		"com.viber.voip",
+		"com.linecorp.LINEAPP",
+	])
+
+	// Notification icon classification + rendering lives in IconRenderer (Plugins/IconRenderer.swift).
+	// NotificationPlugin still owns the cache directory; it passes `Self.cacheDir` into IconRenderer.fallbackIcon when looking up brand / fallback icons.
+	// The senderPicturePackages set has moved there too (we read it as IconRenderer.senderPicturePackages).
+
+	init(device: Device, config: Config = .shared) {
+		self.device = device
 		self.config = config
-        if !Self.cacheLoaded {
-            Self.cacheLoaded = true
-            Self.loadIconCacheFromDisk()
-        }
-        Self.registerNotificationCategories()
-        Self.periodicCacheCleanupIfNeeded()
-    }
+		if !Self.cacheLoaded {
+			Self.cacheLoaded = true
+			Self.loadIconCacheFromDisk()
+		}
+
+		Self.registerNotificationCategories()
+		Self.periodicCacheCleanupIfNeeded()
+	}
+
+	// MARK: - Notification Identification and Filtering
 
 	/// Extracts the Android package from KDE Connect's status-bar notification ID.
 	/// An opaque ID cannot be used to identify an app, so its notifications remain allowed by default.
 	static func packageName(from notificationId: String) -> String? {
 		let parts = notificationId.split(separator: "|", omittingEmptySubsequences: false)
-		guard parts.count == 5 || parts.count == 6,
-			let userId = Int(parts[0]), userId >= 0,
-			Int(parts[2]) != nil,
-			let uid = Int(parts[4]), uid >= 0 else {
+		guard parts.count == 5 || parts.count == 6, let userId = Int(parts[0]), userId >= 0, Int(parts[2]) != nil, let uid = Int(parts[4]), uid >= 0 else {
 			return nil
 		}
 
@@ -308,6 +307,7 @@ class NotificationPlugin: PluginProtocol {
 	private static func retireNotification(id: String) {
 		shownNotificationIds.remove(id)
 		shownNotificationOrder.removeAll { $0 == id }
+
 		notificationContentHash.removeValue(forKey: id)
 		shownNotificationPackages.removeValue(forKey: id)
 		deliveryState.invalidate(id: id)
@@ -315,23 +315,22 @@ class NotificationPlugin: PluginProtocol {
 
 	/// Check pairing and preferences both before and after asynchronous delivery.
 	static func isDeviceEligible(deviceId: String, packageName: String, config: Config) -> Bool {
-		config.isPaired(deviceId: deviceId)
-			&& config.enabledPlugins(for: deviceId).contains("notification")
-			&& config.isNotificationAppEnabled(packageName: packageName, for: deviceId)
+		config.isPaired(deviceId: deviceId) && config.enabledPlugins(for: deviceId).contains("notification") && config.isNotificationAppEnabled(packageName: packageName, for: deviceId)
 	}
 
 	private static func canDeliverNotification(id: String, revision: UUID, deviceId: String, packageName: String, config: Config) -> Bool {
-		deliveryState.isActive(id: id, revision: revision)
-			&& isDeviceEligible(deviceId: deviceId, packageName: packageName, config: config)
+		deliveryState.isActive(id: id, revision: revision) && isDeviceEligible(deviceId: deviceId, packageName: packageName, config: config)
 	}
 
-    func canHandle(type: String) -> Bool {
-        type == "kdeconnect.notification"
-    }
+	// MARK: - Incoming Notifications
 
-    func handle(packet: NetworkPacket) {
-        let isCancel = packet.body["isCancel"]?.value as? Bool ?? false
-        let notifId = packet.body["id"]?.value as? String ?? UUID().uuidString
+	func canHandle(type: String) -> Bool {
+		type == "kdeconnect.notification"
+	}
+
+	func handle(packet: NetworkPacket) {
+		let isCancel = packet.body["isCancel"]?.value as? Bool ?? false
+		let notifId = packet.body["id"]?.value as? String ?? UUID().uuidString
 		let reportedPackage = (packet.body["packageName"]?.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 		let packageName = reportedPackage.isEmpty ? (Self.packageName(from: notifId) ?? "") : reportedPackage
 		let notificationKey = Self.notificationIdentifier(deviceId: device.id, notificationId: notifId)
@@ -341,154 +340,154 @@ class NotificationPlugin: PluginProtocol {
 		let ticker = packet.body["ticker"]?.value as? String ?? ""
 
 		// Discover call-only apps before call handling can return early.
-		if !isCancel,
-			!filteredPackages.contains(where: { packageName.hasPrefix($0) }),
-			!filteredTitles.contains(title),
-			!filteredTitles.contains(appName) {
+		if !isCancel, !filteredPackages.contains(where: { packageName.hasPrefix($0) }), !filteredTitles.contains(title), !filteredTitles.contains(appName) {
 			config.recordNotificationApp(packageName: packageName, appName: appName, for: device.id)
 		}
 
 		let appEnabled = config.isNotificationAppEnabled(packageName: packageName, for: device.id)
-        let isIncallUI = notifId.contains("incallui") || packageName.contains("incallui")
-            || packageName == "com.samsung.android.dialer" || packageName == "com.android.dialer"
-            || packageName == "com.google.android.dialer"
-            || packageName == "com.android.server.telecom"
+		let isIncallUI = notifId.contains("incallui") || packageName.contains("incallui") || packageName == "com.samsung.android.dialer" || packageName == "com.android.dialer" || packageName == "com.google.android.dialer" || packageName == "com.android.server.telecom"
 
-        // VoIP call apps — their notifications contain the actual caller name
-        // (telephony packets for VoIP calls have no contactName)
-        let isVoIPCall = Self.voipPackages.contains(packageName)
+		// VoIP call apps — their notifications contain the actual caller name (telephony packets for VoIP calls have no contactName)
+		let isVoIPCall = Self.voipPackages.contains(packageName)
 
-        // Handle call UI notifications separately — these drive media pause/resume
-        if isIncallUI {
-            let combined = (title + " " + text).lowercased()
+		// Handle call UI notifications separately — these drive media pause/resume
+		if isIncallUI {
+			let combined = (title + " " + text).lowercased()
 
-            // Dialer packages send BOTH active call UI AND post-call notifications
-            // (e.g., "Missed call", call log entries). Only active calls should
-            // trigger the telephony state machine.
-            let isMissedOrHistory = combined.contains("missed") || combined.contains("ended")
-                || combined.contains("rejected") || combined.contains("declined")
+			// Dialer packages send BOTH active call UI AND post-call notifications (e.g., "Missed call", call log entries).
+			// Only active calls should trigger the telephony state machine.
+			let isMissedOrHistory = combined.contains("missed") || combined.contains("ended") || combined.contains("rejected") || combined.contains("declined")
 
-            if isCancel {
-                KLog.log("[Notification] Call UI dismissed (incallui cancel)")
-                if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
-                    telephony.onCallEnded()
-                }
+			if isCancel {
+				KLog.log("[Notification] Call UI dismissed (incallui cancel)")
+				if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
+					telephony.onCallEnded()
+				}
+
 				Self.retireNotification(id: notificationKey)
 				UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [notificationKey])
 				UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationKey])
-            } else if isMissedOrHistory {
-                // Post-call notification from dialer — NOT an active call.
-                // Let it fall through to normal notification display.
-                KLog.log("[Notification] Dialer history notification (not active call)")
-            } else if appEnabled {
-                KLog.log("[Notification] Call UI appeared")
-                if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
-                    telephony.onCallStarted(caller: title.isEmpty ? text : title)
-                }
-            }
-            return
-        }
+			} else if isMissedOrHistory {
+				// Post-call notification from dialer — NOT an active call.
+				// Let it fall through to normal notification display.
+				KLog.log("[Notification] Dialer history notification (not active call)")
+			} else if appEnabled {
+				KLog.log("[Notification] Call UI appeared")
+				if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
+					telephony.onCallStarted(caller: title.isEmpty ? text : title)
+				}
+			}
 
-        // VoIP calls (WhatsApp, Meet, Telegram, etc.):
-        // Their notifications contain the actual caller name that telephony packets lack.
-        // Cross-reference with telephony to resolve "Unknown caller" → real name.
-        if isVoIPCall && !isCancel {
-            let combined = (title + " " + text).lowercased()
+			return
+		}
 
-            // Detect active call keywords
-            let isCallNotif = combined.contains("incoming") || combined.contains("calling")
-                || combined.contains("ringing") || combined.contains("video call")
-                || combined.contains("voice call") || combined.contains("audio call")
-                || combined.contains("call from")
+		// VoIP calls (WhatsApp, Meet, Telegram, etc.):
+		// Their notifications contain the actual caller name that telephony packets lack.
+		// Cross-reference with telephony to resolve "Unknown caller" → real name.
+		if isVoIPCall && !isCancel {
+			let combined = (title + " " + text).lowercased()
 
-            if isCallNotif {
+			// Detect active call keywords
+			let isCallNotif = combined.contains("incoming") || combined.contains("calling") || combined.contains("ringing") || combined.contains("video call") || combined.contains("voice call") || combined.contains("audio call") || combined.contains("call from")
+
+			if isCallNotif {
 				guard appEnabled else {
 					return
 				}
 
-                // Extract caller name: title is usually the caller, unless title = app name
-                let caller: String
-                if !title.isEmpty && title != appName {
-                    caller = title
-                } else if !text.isEmpty {
-                    // Some apps put name in text: "John is calling" → extract "John"
-                    let stripped = text
-                        .replacingOccurrences(of: "is calling", with: "")
-                        .replacingOccurrences(of: "Incoming voice call", with: "")
-                        .replacingOccurrences(of: "Incoming video call", with: "")
-                        .replacingOccurrences(of: "Incoming call", with: "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    caller = stripped.isEmpty ? text : stripped
-                } else {
-                    caller = "Unknown"
-                }
+				// Extract caller name: title is usually the caller, unless title = app name
+				let caller: String
+				if !title.isEmpty && title != appName {
+					caller = title
+				} else if !text.isEmpty {
+					// Some apps put name in text: "John is calling" → extract "John"
+					let stripped = text
+						.replacingOccurrences(of: "is calling", with: "")
+						.replacingOccurrences(of: "Incoming voice call", with: "")
+						.replacingOccurrences(of: "Incoming video call", with: "")
+						.replacingOccurrences(of: "Incoming call", with: "")
+						.trimmingCharacters(in: .whitespacesAndNewlines)
 
-                KLog.log("[Notification] VoIP call detected from \(packageName)")
-                if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
-                    if telephony.hasActiveCall {
-                        // Telephony packet arrived first — update the "Unknown" name
-                        telephony.updateCallerName(caller)
-                    } else {
-                        // VoIP notification arrived first — buffer for when telephony comes
-                        telephony.bufferVoIPCaller(caller)
-                        // Also start the call via onCallStarted (in case no telephony packet follows)
-                        telephony.onCallStarted(caller: caller)
-                    }
-                }
-                return
-            }
+					caller = stripped.isEmpty ? text : stripped
+				} else {
+					caller = "Unknown"
+				}
 
-            // VoIP call ended
-            let isCallEnded = combined.contains("missed") || combined.contains("ended")
-                || combined.contains("declined")
-            if isCallEnded {
-                if let telephony = device.plugins["telephony"] as? TelephonyPlugin, telephony.hasActiveCall {
-                    telephony.onCallEnded()
-                }
-                // Fall through to show as normal notification (missed call info)
-            }
-        }
+				KLog.log("[Notification] VoIP call detected from \(packageName)")
+				if let telephony = device.plugins["telephony"] as? TelephonyPlugin {
+					if telephony.hasActiveCall {
+						// Telephony packet arrived first — update the "Unknown" name
+						telephony.updateCallerName(caller)
+					} else {
+						// VoIP notification arrived first — buffer for when telephony comes
+						telephony.bufferVoIPCaller(caller)
+						// Also start the call via onCallStarted (in case no telephony packet follows)
+						telephony.onCallStarted(caller: caller)
+					}
+				}
 
-        // VoIP call cancel = call UI dismissed
-        if isVoIPCall && isCancel {
-            if let telephony = device.plugins["telephony"] as? TelephonyPlugin, telephony.hasActiveCall {
-                telephony.onCallEnded()
-            }
-        }
+				return
+			}
 
-        // Non-VoIP notification during an active call with unknown caller:
-        // If a VoIP package sends a notification (without call keywords) during an active unknown call,
-        // the title is likely the caller name. This handles apps not in our keyword list.
-        if !isVoIPCall && !isCancel && Self.voipPackages.contains(packageName) == false {
-            // Not a VoIP app — skip caller name extraction
-        } else if isVoIPCall && !isCancel {
-            // Already handled above
-        }
+			// VoIP call ended
+			let isCallEnded = combined.contains("missed") || combined.contains("ended") || combined.contains("declined")
 
-        if isCancel {
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [notificationKey])
+			if isCallEnded {
+				if let telephony = device.plugins["telephony"] as? TelephonyPlugin, telephony.hasActiveCall {
+					telephony.onCallEnded()
+				}
+
+				// Fall through to show as normal notification (missed call info)
+			}
+		}
+
+		// VoIP call cancel = call UI dismissed
+		if isVoIPCall && isCancel {
+			if let telephony = device.plugins["telephony"] as? TelephonyPlugin, telephony.hasActiveCall {
+				telephony.onCallEnded()
+			}
+		}
+
+		// Non-VoIP notification during an active call with unknown caller:
+		// If a VoIP package sends a notification (without call keywords) during an active unknown call, the title is likely the caller name.
+		// This handles apps not in our keyword list.
+		if !isVoIPCall && !isCancel && Self.voipPackages.contains(packageName) == false {
+			// Not a VoIP app — skip caller name extraction
+		} else if isVoIPCall && !isCancel {
+			// Already handled above
+		}
+
+		if isCancel {
+			UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [notificationKey])
 			UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationKey])
-            Self.retireNotification(id: notificationKey)
-            return
-        }
+			Self.retireNotification(id: notificationKey)
 
-        // Deduplication with update detection
-        let contentHash = "\(appName)\(title)\(text)"
-        if Self.shownNotificationIds.contains(notificationKey) {
-            // Allow through if content changed (notification update)
-            if Self.notificationContentHash[notificationKey] == contentHash { return }
-            KLog.log("[Notification] Update detected for \(notifId)")
-        }
+			return
+		}
 
-        // Filter system notifications — exact package name match only
-        if filteredPackages.contains(where: { packageName.hasPrefix($0) || packageName == $0 }) {
-            KLog.log("[Notification] Filtered (package): \(packageName)")
-            return
-        }
-        if filteredTitles.contains(title) || filteredTitles.contains(appName) {
-            KLog.log("[Notification] Filtered (title/appName): \(appName) - \(title)")
-            return
-        }
+		// Deduplication with update detection
+		let contentHash = "\(appName)\(title)\(text)"
+		if Self.shownNotificationIds.contains(notificationKey) {
+			// Allow through if content changed (notification update)
+			if Self.notificationContentHash[notificationKey] == contentHash {
+				return
+			}
+
+			KLog.log("[Notification] Update detected for \(notifId)")
+		}
+
+		// Filter system notifications — exact package name match only
+		if filteredPackages.contains(where: { packageName.hasPrefix($0) || packageName == $0 }) {
+			KLog.log("[Notification] Filtered (package): \(packageName)")
+
+			return
+		}
+
+		if filteredTitles.contains(title) || filteredTitles.contains(appName) {
+			KLog.log("[Notification] Filtered (title/appName): \(appName) - \(title)")
+
+			return
+		}
 
 		guard appEnabled else {
 			return
@@ -496,154 +495,163 @@ class NotificationPlugin: PluginProtocol {
 
 		guard Self.rateLimiter.allows(deviceId: device.id, eligible: appEnabled, now: Date()) else {
 			KLog.log("[Notification] Rate limit exceeded for \(device.id), dropping \(notifId)")
+
 			return
 		}
 
-        let isNew = Self.shownNotificationIds.insert(notificationKey).inserted
-        if isNew {
-            Self.shownNotificationOrder.append(notificationKey)
-        }
-        Self.notificationContentHash[notificationKey] = contentHash
+		let isNew = Self.shownNotificationIds.insert(notificationKey).inserted
+		if isNew {
+			Self.shownNotificationOrder.append(notificationKey)
+		}
+
+		Self.notificationContentHash[notificationKey] = contentHash
 		Self.shownNotificationPackages[notificationKey] = packageName
 		let revision = Self.deliveryState.activate(id: notificationKey)
 
-        // Cap at 500 entries to prevent unbounded memory growth
-        if Self.shownNotificationOrder.count > 500 {
-            let toRemove = Self.shownNotificationOrder.prefix(250)
-            for id in toRemove {
-                Self.shownNotificationIds.remove(id)
-                Self.notificationContentHash.removeValue(forKey: id)
+		// Cap at 500 entries to prevent unbounded memory growth
+		if Self.shownNotificationOrder.count > 500 {
+			let toRemove = Self.shownNotificationOrder.prefix(250)
+			for id in toRemove {
+				Self.shownNotificationIds.remove(id)
+				Self.notificationContentHash.removeValue(forKey: id)
 				Self.shownNotificationPackages.removeValue(forKey: id)
 				Self.deliveryState.invalidate(id: id)
-            }
-            Self.shownNotificationOrder.removeFirst(250)
-        }
+			}
 
-        // Only show reply button for notifications that support it
-        // KDE Connect sends requestReplyId for repliable notifications (messaging apps)
-        let requestReplyId = packet.body["requestReplyId"]?.value as? String
-        let repliable = packet.body["repliable"]?.value as? Bool ?? false
-        let replyId: String? = (requestReplyId != nil || repliable) ? notifId : nil
+			Self.shownNotificationOrder.removeFirst(250)
+		}
 
-        let hasPayload = (packet.payloadSize ?? 0) > 0
-        let payloadPort = packet.payloadTransferInfo?["port"]?.asPort()
+		// Only show reply button for notifications that support it KDE Connect sends requestReplyId for repliable notifications (messaging apps)
+		let requestReplyId = packet.body["requestReplyId"]?.value as? String
+		let repliable = packet.body["repliable"]?.value as? Bool ?? false
+		let replyId: String? = (requestReplyId != nil || repliable) ? notifId : nil
 
-        KLog.log("[Notification] \(appName) - \(title.prefix(20))... hasIcon=\(hasPayload) port=\(payloadPort.map{String($0)} ?? "nil") pkg=\(packageName)")
+		let hasPayload = (packet.payloadSize ?? 0) > 0
+		let payloadPort = packet.payloadTransferInfo?["port"]?.asPort()
 
-        // Check icon cache first, then fallback to SF Symbol icons for known apps
-        if let cachedPath = Self.iconCache[packageName] {
-            KLog.log("[Notification] Cache hit for \(packageName)")
-            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId)
-        } else if let fallbackPath = IconRenderer.fallbackIcon(for: packageName, cacheDir: Self.cacheDir) {
-            KLog.log("[Notification] Using fallback icon for \(packageName)")
-            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
+		KLog.log("[Notification] \(appName) - \(title.prefix(20))... hasIcon=\(hasPayload) port=\(payloadPort.map{String($0)} ?? "nil") pkg=\(packageName)")
 
-            // Still try to download the real icon if available (will replace fallback on next notification)
-            if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !IconRenderer.senderPicturePackages.contains(packageName) {
-                Self.pendingIconDownloads[packageName] = []
-                let storedCert = config.loadPairedDeviceCert(id: device.id)
-                downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { iconPath in
-                    Task { @MainActor in
-                        Self.pendingIconDownloads.removeValue(forKey: packageName)
-                    }
-                }
-            }
-        } else if hasPayload, let port = payloadPort {
-            // Post notification IMMEDIATELY without icon — don't make user wait for download
-            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+		// Check icon cache first, then fallback to SF Symbol icons for known apps
+		if let cachedPath = Self.iconCache[packageName] {
+			KLog.log("[Notification] Cache hit for \(packageName)")
+			postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: cachedPath, replyId: replyId)
+		} else if let fallbackPath = IconRenderer.fallbackIcon(for: packageName, cacheDir: Self.cacheDir) {
+			KLog.log("[Notification] Using fallback icon for \(packageName)")
+			postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: fallbackPath, replyId: replyId)
 
-            // Download icon in background. If successful, re-post with icon (same ID = in-place update)
-            if Self.pendingIconDownloads[packageName] == nil {
-                Self.pendingIconDownloads[packageName] = []
-                let storedCert = config.loadPairedDeviceCert(id: device.id)
-                let capturedNotifId = notificationKey
-                let capturedAppName = appName
-                let capturedTitle = title
-                let capturedText = text
-                let capturedTicker = ticker
-                let capturedReplyId = replyId
-                downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { [weak self] iconPath in
-                    Task { @MainActor in
-                        // ALWAYS clear pending state — even on failure — so future notifications can retry
-                        Self.pendingIconDownloads.removeValue(forKey: packageName)
-                        // Only update the version that requested this icon, never a canceled or muted one.
+			// Still try to download the real icon if available (will replace fallback on next notification)
+			if hasPayload, let port = payloadPort, Self.pendingIconDownloads[packageName] == nil, !IconRenderer.senderPicturePackages.contains(packageName) {
+				Self.pendingIconDownloads[packageName] = []
+				let storedCert = config.loadPairedDeviceCert(id: device.id)
+				downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { iconPath in
+					Task { @MainActor in
+						Self.pendingIconDownloads.removeValue(forKey: packageName)
+					}
+				}
+			}
+		} else if hasPayload, let port = payloadPort {
+			// Post notification IMMEDIATELY without icon — don't make user wait for download
+			postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+
+			// Download icon in background.
+			// If successful, re-post with icon (same ID = in-place update)
+			if Self.pendingIconDownloads[packageName] == nil {
+				Self.pendingIconDownloads[packageName] = []
+				let storedCert = config.loadPairedDeviceCert(id: device.id)
+				let capturedNotifId = notificationKey
+				let capturedAppName = appName
+				let capturedTitle = title
+				let capturedText = text
+				let capturedTicker = ticker
+				let capturedReplyId = replyId
+				downloadIcon(host: (device.kdeConn?.host ?? ""), port: port, expectedSize: Int(packet.payloadSize ?? 0), packageName: packageName, storedCertData: storedCert) { [weak self] iconPath in
+					Task { @MainActor in
+						// ALWAYS clear pending state — even on failure — so future notifications can retry
+						Self.pendingIconDownloads.removeValue(forKey: packageName)
+						// Only update the version that requested this icon, never a canceled or muted one.
 						guard Self.deliveryState.isActive(id: capturedNotifId, revision: revision) else {
 							return
 						}
 
-                        // Re-post notification with icon (same ID = in-place update)
-                        if let iconPath = iconPath {
-                            self?.postNotification(id: capturedNotifId, revision: revision, packageName: packageName, appName: capturedAppName, title: capturedTitle, text: capturedText, ticker: capturedTicker, iconPath: iconPath, replyId: capturedReplyId)
-                        } else {
-                            KLog.log("[Notification] Icon download failed for \(packageName), will retry on next notification")
-                        }
-                    }
-                }
-            }
-        } else {
-            postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
-        }
-    }
+						// Re-post notification with icon (same ID = in-place update)
+						if let iconPath = iconPath {
+							self?.postNotification(id: capturedNotifId, revision: revision, packageName: packageName, appName: capturedAppName, title: capturedTitle, text: capturedText, ticker: capturedTicker, iconPath: iconPath, replyId: capturedReplyId)
+						} else {
+							KLog.log("[Notification] Icon download failed for \(packageName), will retry on next notification")
+						}
+					}
+				}
+			}
+		} else {
+			postNotification(id: notificationKey, revision: revision, packageName: packageName, appName: appName, title: title, text: text, ticker: ticker, iconPath: nil, replyId: replyId)
+		}
+	}
 
-    func getCachedIconPath(packageName: String) -> String? {
-        return Self.iconCache[packageName]
-    }
+	// MARK: - Notification Delivery
 
-    private func postNotification(id: String, revision: UUID, packageName: String, appName: String, title: String, text: String, ticker: String, iconPath: String?, replyId: String?) {
+	func getCachedIconPath(packageName: String) -> String? {
+		return Self.iconCache[packageName]
+	}
+
+	private func postNotification(id: String, revision: UUID, packageName: String, appName: String, title: String, text: String, ticker: String, iconPath: String?, replyId: String?) {
 		let deviceId = device.id
 		let config = self.config
 		guard Self.canDeliverNotification(id: id, revision: revision, deviceId: deviceId, packageName: packageName, config: config) else {
 			return
 		}
 
-        let content = UNMutableNotificationContent()
-        content.title = appName
-        if !title.isEmpty && title != appName {
-            content.subtitle = title
-        }
-        content.body = text.isEmpty ? ticker : text
-        content.sound = .default
-        content.threadIdentifier = "app-\(appName)"
+		let content = UNMutableNotificationContent()
+		content.title = appName
+		if !title.isEmpty && title != appName {
+			content.subtitle = title
+		}
+
+		content.body = text.isEmpty ? ticker : text
+		content.sound = .default
+		content.threadIdentifier = "app-\(appName)"
 		var userInfo = ["deviceId": deviceId, "deliveryRevision": revision.uuidString]
 		if !packageName.isEmpty {
 			userInfo["androidPackageName"] = packageName
 		}
 
-        // OTP detection — check body text for verification codes
-        if let otpCode = Self.extractOTP(from: content.body) {
-            content.categoryIdentifier = "OTP_CODE"
+		// OTP detection — check body text for verification codes
+		if let otpCode = Self.extractOTP(from: content.body) {
+			content.categoryIdentifier = "OTP_CODE"
 			userInfo["otpCode"] = otpCode
-            KLog.log("[Notification] OTP detected (\(otpCode.count) chars)")
-        } else if let replyId = replyId {
-            content.categoryIdentifier = "NOTIFICATION_REPLY"
+			KLog.log("[Notification] OTP detected (\(otpCode.count) chars)")
+		} else if let replyId = replyId {
+			content.categoryIdentifier = "NOTIFICATION_REPLY"
 			userInfo["replyId"] = replyId
-        }
+		}
 
 		content.userInfo = userInfo
 
-        if let iconPath = iconPath {
-            // UNNotificationAttachment MOVES the file, destroying the original.
-            // Hardlink in the same cache dir (same APFS volume = guaranteed to work).
-            // When macOS moves the link, the original cache file stays (refcount > 0).
-            let linkPath = Self.cacheDir + "/tmp-\(UUID().uuidString).png"
-            do {
-                // Prefer hardlink (zero-copy, same APFS volume). Fall back to copy if hardlink fails.
-                do {
-                    try FileManager.default.linkItem(atPath: iconPath, toPath: linkPath)
-                } catch {
-                    KLog.log("[Notification] Hardlink failed, falling back to copy: \(error)")
-                    try FileManager.default.copyItem(atPath: iconPath, toPath: linkPath)
-                }
-                let attachment = try UNNotificationAttachment(identifier: "icon", url: URL(fileURLWithPath: linkPath), options: [
-                    UNNotificationAttachmentOptionsTypeHintKey: "public.png",
-                    UNNotificationAttachmentOptionsThumbnailClippingRectKey: CGRect(x: 0, y: 0, width: 1, height: 1).dictionaryRepresentation
-                ])
-                content.attachments = [attachment]
-            } catch {
-                KLog.log("[Notification] Attachment error: \(error)")
-                try? FileManager.default.removeItem(atPath: linkPath)
-            }
-        }
+		if let iconPath = iconPath {
+			// UNNotificationAttachment MOVES the file, destroying the original.
+			// Hardlink in the same cache dir (same APFS volume = guaranteed to work).
+			// When macOS moves the link, the original cache file stays (refcount > 0).
+			let linkPath = Self.cacheDir + "/tmp-\(UUID().uuidString).png"
+			do {
+				// Prefer hardlink (zero-copy, same APFS volume).
+				// Fall back to copy if hardlink fails.
+				do {
+					try FileManager.default.linkItem(atPath: iconPath, toPath: linkPath)
+				} catch {
+					KLog.log("[Notification] Hardlink failed, falling back to copy: \(error)")
+					try FileManager.default.copyItem(atPath: iconPath, toPath: linkPath)
+				}
+
+				let attachment = try UNNotificationAttachment(identifier: "icon", url: URL(fileURLWithPath: linkPath), options: [
+					UNNotificationAttachmentOptionsTypeHintKey: "public.png",
+					UNNotificationAttachmentOptionsThumbnailClippingRectKey: CGRect(x: 0, y: 0, width: 1, height: 1).dictionaryRepresentation
+				])
+
+				content.attachments = [attachment]
+			} catch {
+				KLog.log("[Notification] Attachment error: \(error)")
+				try? FileManager.default.removeItem(atPath: linkPath)
+			}
+		}
 
 		let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
 		UNUserNotificationCenter.current().getNotificationSettings { settings in
@@ -654,6 +662,7 @@ class NotificationPlugin: PluginProtocol {
 
 				guard settings.authorizationStatus == .authorized else {
 					KLog.log("[Notification] BLOCKED: not authorized (status=\(settings.authorizationStatus.rawValue)). Enable in System Settings > Notifications > KonnectMac")
+
 					return
 				}
 
@@ -663,8 +672,7 @@ class NotificationPlugin: PluginProtocol {
 						Self.canDeliverNotification(id: id, revision: revision, deviceId: deviceId, packageName: packageName, config: config)
 					},
 					shouldRemove: {
-						guard Self.deliveryState.hasActive(id: id),
-							let currentPackage = Self.shownNotificationPackages[id] else {
+						guard Self.deliveryState.hasActive(id: id), let currentPackage = Self.shownNotificationPackages[id] else {
 							return true
 						}
 
@@ -680,388 +688,417 @@ class NotificationPlugin: PluginProtocol {
 				)
 			}
 		}
-    }
+	}
 
-    // MARK: - Icon Download via BSD Socket + SecureTransport
+	// MARK: - Icon Download via BSD Socket + SecureTransport
 
-    private func downloadIcon(host: String, port: UInt16, expectedSize: Int, packageName: String, storedCertData: Data?, completion: @escaping (String?) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            // Retry on transient TLS handshake failures — phone-side upload TLS endpoint
-            // gets into bad states intermittently and a fresh socket usually clears it.
-            // Up to 3 attempts with short backoff; icons aren't critical so we don't try
-            // as hard as the file-share path.
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                if attempt > 1 {
-                    let backoffMs: UInt32 = 200 * UInt32(1 << (attempt - 1)) // 400ms, 800ms
-                    KLog.log("[Notification] Icon retry \(attempt)/\(maxAttempts) for \(packageName) after \(backoffMs)ms")
-                    usleep(backoffMs * 1000)
-                }
-                if let iconPath = self.downloadIconSync(host: host, port: port, expectedSize: expectedSize, packageName: packageName, storedCertData: storedCertData) {
-                    completion(iconPath)
-                    return
-                }
-            }
-            completion(nil)
-        }
-    }
+	private func downloadIcon(host: String, port: UInt16, expectedSize: Int, packageName: String, storedCertData: Data?, completion: @escaping (String?) -> Void) {
+		DispatchQueue.global(qos: .userInitiated).async {
+			// Retry on transient TLS handshake failures — phone-side upload TLS endpoint gets into bad states intermittently and a fresh socket usually clears it.
+			// Up to 3 attempts with short backoff; icons aren't critical so we don't try as hard as the file-share path.
+			let maxAttempts = 3
+			for attempt in 1...maxAttempts {
+				if attempt > 1 {
+					let backoffMs: UInt32 = 200 * UInt32(1 << (attempt - 1)) // 400ms, 800ms
+					KLog.log("[Notification] Icon retry \(attempt)/\(maxAttempts) for \(packageName) after \(backoffMs)ms")
+					usleep(backoffMs * 1000)
+				}
 
-    private func downloadIconSync(host: String, port: UInt16, expectedSize: Int, packageName: String, storedCertData: Data?) -> String? {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
+				if let iconPath = self.downloadIconSync(host: host, port: port, expectedSize: expectedSize, packageName: packageName, storedCertData: storedCertData) {
+					completion(iconPath)
 
-        SocketHelpers.enableNoDelay(fd: fd)
+					return
+				}
+			}
+
+			completion(nil)
+		}
+	}
+
+	private func downloadIconSync(host: String, port: UInt16, expectedSize: Int, packageName: String, storedCertData: Data?) -> String? {
+		let fd = socket(AF_INET, SOCK_STREAM, 0)
+		guard fd >= 0 else {
+			return nil
+		}
+
+		SocketHelpers.enableNoDelay(fd: fd)
 		SocketHelpers.disableSigPipe(fd: fd)
 
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else {
-            KLog.log("[Notification] Invalid icon host IP: \(host)")
-            Darwin.close(fd)
-            return nil
-        }
+		var addr = sockaddr_in()
+		addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+		addr.sin_family = sa_family_t(AF_INET)
+		addr.sin_port = port.bigEndian
+		guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else {
+			KLog.log("[Notification] Invalid icon host IP: \(host)")
+			Darwin.close(fd)
 
-        // Connect timeout (5s) prevents blocking GCD thread for 75s on unreachable ports
-        var connectTimeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
+			return nil
+		}
 
-        let result = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard result == 0 else {
-            KLog.log("[Notification] Icon connect failed for \(packageName) at \(host):\(port): errno=\(errno)")
-            Darwin.close(fd)
-            return nil
-        }
+		// Connect timeout (5s) prevents blocking GCD thread for 75s on unreachable ports
+		var connectTimeout = timeval(tv_sec: 5, tv_usec: 0)
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout, socklen_t(MemoryLayout<timeval>.size))
 
-        // Read/handshake timeout
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+		let result = withUnsafePointer(to: &addr) { ptr in
+			ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+				Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+			}
+		}
 
-        KLog.log("[Notification] Icon TLS connecting to \(host):\(port)")
+		guard result == 0 else {
+			KLog.log("[Notification] Icon connect failed for \(packageName) at \(host):\(port): errno=\(errno)")
+			Darwin.close(fd)
 
-        // Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity
-        // doc in CertificateManager. Sharing the cached identity across many short-lived
-        // TLS handshakes corrupts SecureTransport's per-identity session cache and every
-        // subsequent handshake fails with errSSLInternal (-9810) until app restart.
-        guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
-            KLog.log("[Notification] Could not create fresh TLS identity")
-            Darwin.close(fd)
-            return nil
-        }
-        return withExtendedLifetime(transferId) { () -> String? in
-            self.downloadIconTLSAndRead(
-                fd: fd,
-                identity: transferId.identity,
-                expectedSize: expectedSize,
-                packageName: packageName,
-                storedCertData: storedCertData
-            )
-        }
-    }
+			return nil
+		}
 
-    private func downloadIconTLSAndRead(fd: Int32, identity: SecIdentity, expectedSize: Int, packageName: String, storedCertData: Data?) -> String? {
-        // Setup TLS
-        guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
-            Darwin.close(fd)
-            return nil
-        }
+		// Read/handshake timeout
+		var timeout = timeval(tv_sec: 5, tv_usec: 0)
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
-        let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        defer { fdPtr.deallocate() }
-        fdPtr.pointee = fd
-        TLSHelpers.configure(ctx, TLSContextConfig(isServer: false, identity: identity, fdPtr: fdPtr))
+		KLog.log("[Notification] Icon TLS connecting to \(host):\(port)")
 
-        guard TLSHelpers.runHandshake(ctx, role: "Notification icon") else {
-            SSLClose(ctx); Darwin.close(fd)
-            return nil
-        }
+		// Get a fresh, single-use SecIdentity for this handshake — see TransferIdentity doc in CertificateManager.
+		// Sharing the cached identity across many short-lived TLS handshakes corrupts SecureTransport's per-identity session cache and every subsequent handshake fails with errSSLInternal (-9810) until app restart.
+		guard let transferId = CertificateManager.shared.freshTransferIdentity() else {
+			KLog.log("[Notification] Could not create fresh TLS identity")
+			Darwin.close(fd)
 
-        // Validate peer certificate matches the paired device
-        if let storedCert = storedCertData, storedCert.count > 1 {
-            if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
-                KLog.log("[Notification] Icon download peer cert mismatch — rejecting")
-                SSLClose(ctx); Darwin.close(fd)
-                return nil
-            }
-        }
+			return nil
+		}
 
-        KLog.log("[Notification] Icon TLS connected")
+		return withExtendedLifetime(transferId) { () -> String? in
+			self.downloadIconTLSAndRead(fd: fd, identity: transferId.identity, expectedSize: expectedSize, packageName: packageName, storedCertData: storedCertData)
+		}
+	}
 
-        // Read data — cap at 1MB to prevent memory exhaustion from malicious payloads
-        let maxIconSize = 1_048_576
-        var received = Data()
-        var buffer = [UInt8](repeating: 0, count: min(expectedSize, 65536))
-        let maxSize = min(max(expectedSize, 65536), maxIconSize)
+	private func downloadIconTLSAndRead(fd: Int32, identity: SecIdentity, expectedSize: Int, packageName: String, storedCertData: Data?) -> String? {
+		// Setup TLS
+		guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
+			Darwin.close(fd)
 
-        while received.count < maxSize {
-            var bytesRead = 0
-            let toRead = min(buffer.count, maxSize - received.count)
-            let readStatus = SSLRead(ctx, &buffer, toRead, &bytesRead)
+			return nil
+		}
 
-            if bytesRead > 0 {
-                received.append(Data(buffer[0..<bytesRead]))
-            }
+		let fdPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+		defer { fdPtr.deallocate() }
 
-            if readStatus == errSSLClosedGraceful || readStatus == errSSLClosedAbort {
-                break
-            }
-            if readStatus != errSecSuccess && readStatus != errSSLWouldBlock {
-                break
-            }
-            if bytesRead == 0 && readStatus != errSSLWouldBlock {
-                break
-            }
-        }
+		fdPtr.pointee = fd
+		TLSHelpers.configure(ctx, TLSContextConfig(isServer: false, identity: identity, fdPtr: fdPtr))
 
-        SSLClose(ctx)
-        Darwin.close(fd)
+		guard TLSHelpers.runHandshake(ctx, role: "Notification icon") else {
+			SSLClose(ctx); Darwin.close(fd)
 
-        guard !received.isEmpty else {
-            KLog.log("[Notification] Icon download got 0 bytes")
-            return nil
-        }
+			return nil
+		}
 
-        KLog.log("[Notification] Icon downloaded: \(received.count) bytes for \(packageName)")
+		// Validate peer certificate matches the paired device
+		if let storedCert = storedCertData, storedCert.count > 1 {
+			if !TLSHelpers.validatePeer(ctx, expectedCertData: storedCert) {
+				KLog.log("[Notification] Icon download peer cert mismatch — rejecting")
+				SSLClose(ctx); Darwin.close(fd)
 
-        // Validate: must be a valid image
-        guard let image = NSImage(data: received), image.size.width > 0, image.size.height > 0 else {
-            KLog.log("[Notification] Icon data is not a valid image for \(packageName)")
-            return nil
-        }
+				return nil
+			}
+		}
 
-        let w = image.size.width
-        let h = image.size.height
-        let aspectRatio = max(w, h) / max(min(w, h), 1)
+		KLog.log("[Notification] Icon TLS connected")
 
-        // Distinguish app icons from content images:
-        // App icons: small (≤256px), roughly square (aspect ≤1.3)
-        // Content images: larger, often rectangular (profile pics, thumbnails, post images)
-        // If it looks like a content image, use it for THIS notification only (don't cache)
-        //
-        // DM-capable apps (email, messaging, social DMs) send the SENDER'S profile pic
-        // as the icon payload, not the app icon. These change per notification — never
-        // cache them. See `senderPicturePackages` above for the full list.
-        let isSenderPicApp = IconRenderer.senderPicturePackages.contains(packageName)
-        let looksLikeAppIcon = !isSenderPicApp && max(w, h) <= 256 && aspectRatio <= 1.3
-        if !looksLikeAppIcon {
-            KLog.log("[Notification] Content image detected (\(Int(w))x\(Int(h)) ratio=\(String(format: "%.2f", aspectRatio))) for \(packageName) — using but not caching")
-            // Write to a temp file for this notification, don't cache as the app icon
-            let tempPath = NSTemporaryDirectory() + "konnect-content-\(UUID().uuidString).png"
-            do {
-                try received.write(to: URL(fileURLWithPath: tempPath))
-            } catch {
-                KLog.log("[Notification] Content image write failed: \(error)")
-                return nil
-            }
-            return tempPath
-        }
+		// Read data — cap at 1MB to prevent memory exhaustion from malicious payloads
+		let maxIconSize = 1_048_576
+		var received = Data()
+		var buffer = [UInt8](repeating: 0, count: min(expectedSize, 65536))
+		let maxSize = min(max(expectedSize, 65536), maxIconSize)
 
-        KLog.log("[Notification] App icon validated (\(Int(w))x\(Int(h))) for \(packageName)")
+		while received.count < maxSize {
+			var bytesRead = 0
+			let toRead = min(buffer.count, maxSize - received.count)
+			let readStatus = SSLRead(ctx, &buffer, toRead, &bytesRead)
 
-        // Cache by package name
-        // Ensure cache directory exists before every write (it may have been purged since app launch)
-        let cacheURL = URL(fileURLWithPath: Self.cacheDir)
-        do {
-            try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
-        } catch {
-            KLog.log("[Notification] Icon cache directory creation FAILED: \(error.localizedDescription)")
-            return nil
-        }
+			if bytesRead > 0 {
+				received.append(Data(buffer[0..<bytesRead]))
+			}
 
-        // Sanitize packageName to prevent path traversal
-        let safePackageName = packageName
-            .replacingOccurrences(of: "..", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-            .replacingOccurrences(of: "\0", with: "")
-        let fileURL = cacheURL.appendingPathComponent("\(safePackageName).png")
-        let cachePath = fileURL.path
-        do {
-            try received.write(to: fileURL)
-        } catch {
-            KLog.log("[Notification] Icon cache WRITE FAILED: \(error.localizedDescription) path=\(cachePath)")
-            return nil
-        }
+			if readStatus == errSSLClosedGraceful || readStatus == errSSLClosedAbort {
+				break
+			}
 
-        // Verify the file was actually written and has content
-        let fm = FileManager.default
-        if fm.fileExists(atPath: cachePath),
-           let attrs = try? fm.attributesOfItem(atPath: cachePath),
-           let fileSize = attrs[.size] as? Int, fileSize > 0 {
-            Task { @MainActor in
-                Self.iconCache[packageName] = cachePath
-            }
-            KLog.log("[Notification] Icon cached: \(fileSize) bytes -> \(cachePath)")
-        } else {
-            KLog.log("[Notification] Icon cache VERIFY FAILED: file missing or empty at \(cachePath)")
-            try? fm.removeItem(atPath: cachePath)
-            return nil
-        }
+			if readStatus != errSecSuccess && readStatus != errSSLWouldBlock {
+				break
+			}
 
-        return cachePath
-    }
+			if bytesRead == 0 && readStatus != errSSLWouldBlock {
+				break
+			}
+		}
 
-    /// Periodic cleanup: removes stale tmp- hardlinks, content images in /tmp/, and icons older than 30 days.
-    /// Runs at most once per hour to avoid filesystem thrashing.
-    private static func periodicCacheCleanupIfNeeded() {
-        guard Date().timeIntervalSince(lastCacheCleanup) > 3600 else { return }
-        lastCacheCleanup = Date()
+		SSLClose(ctx)
+		Darwin.close(fd)
 
-        // Clean tmp- hardlinks in cache dir (left by UNNotificationAttachment)
-        let cacheDirURL = URL(fileURLWithPath: cacheDir)
-        if let files = try? FileManager.default.contentsOfDirectory(atPath: cacheDir) {
-            let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
-            var cleaned = 0
-            for file in files where file.hasSuffix(".png") {
-                if file.hasPrefix("tmp-") {
-                    try? FileManager.default.removeItem(atPath: cacheDirURL.appendingPathComponent(file).path)
-                    cleaned += 1
-                } else {
-                    // Prune old icon cache files at runtime too (not just startup)
-                    let path = cacheDirURL.appendingPathComponent(file).path
-                    if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                       let modDate = attrs[.modificationDate] as? Date, modDate < thirtyDaysAgo {
-                        let name = String(file.dropLast(4))
-                        try? FileManager.default.removeItem(atPath: path)
-                        iconCache.removeValue(forKey: name)
-                        cleaned += 1
-                    }
-                }
-            }
-            if cleaned > 0 { KLog.log("[Notification] Periodic cleanup: removed \(cleaned) stale cache files") }
-        }
+		guard !received.isEmpty else {
+			KLog.log("[Notification] Icon download got 0 bytes")
 
-        // Clean content image temp files in /tmp/ (konnect-content-*.png and konnect-sf-*.png)
-        let tmpDir = NSTemporaryDirectory()
-        if let tmpFiles = try? FileManager.default.contentsOfDirectory(atPath: tmpDir) {
-            var cleaned = 0
-            let oneHourAgo = Date().addingTimeInterval(-3600)
-            for file in tmpFiles where file.hasPrefix("konnect-") && file.hasSuffix(".png") {
-                let path = tmpDir + file
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                   let modDate = attrs[.modificationDate] as? Date, modDate < oneHourAgo {
-                    try? FileManager.default.removeItem(atPath: path)
-                    cleaned += 1
-                }
-            }
-            if cleaned > 0 { KLog.log("[Notification] Periodic cleanup: removed \(cleaned) temp icon files from /tmp/") }
-        }
-    }
+			return nil
+		}
 
-    private static func loadIconCacheFromDisk() {
-        let cacheDirURL = URL(fileURLWithPath: cacheDir)
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: cacheDir) else {
-            KLog.log("[Notification] Icon cache directory not found or empty")
-            return
-        }
-        let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
-        var pruned = 0
-        var purgedSenderPics = 0
-        var purgedFallbacks = 0
-        for file in files where file.hasSuffix(".png") {
-            // Clean up hardlink temp files left by UNNotificationAttachment
-            if file.hasPrefix("tmp-") {
-                try? FileManager.default.removeItem(atPath: cacheDirURL.appendingPathComponent(file).path)
-                pruned += 1
-                continue
-            }
-            let name = String(file.dropLast(4))
-            let fileURL = cacheDirURL.appendingPathComponent(file)
-            let path = fileURL.path
+		KLog.log("[Notification] Icon downloaded: \(received.count) bytes for \(packageName)")
 
-            // Wipe any pre-rendered fallback PNGs from previous app versions. The new
-            // version may render this same package with a real bundled brand asset
-            // instead of the old SF Symbol — re-render on first use rather than serve
-            // a stale icon from disk.
-            if name.hasPrefix("fallback-") {
-                try? FileManager.default.removeItem(atPath: path)
-                purgedFallbacks += 1
-                continue
-            }
+		// Validate: must be a valid image
+		guard let image = NSImage(data: received), image.size.width > 0, image.size.height > 0 else {
+			KLog.log("[Notification] Icon data is not a valid image for \(packageName)")
 
-            // Migration: any cached icon for a package now in `senderPicturePackages` is
-            // a stale sender profile pic from a previous app version that didn't know to
-            // skip caching it. Delete it so the brand fallback shows instead.
-            if IconRenderer.senderPicturePackages.contains(name) {
-                try? FileManager.default.removeItem(atPath: path)
-                purgedSenderPics += 1
-                continue
-            }
+			return nil
+		}
 
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let fileSize = attrs[.size] as? Int, fileSize > 0 {
-                // Prune icons older than 30 days
-                if let modDate = attrs[.modificationDate] as? Date, modDate < thirtyDaysAgo {
-                    try? FileManager.default.removeItem(atPath: path)
-                    pruned += 1
-                    continue
-                }
-                iconCache[name] = path
-            } else {
-                // Clean up empty/corrupt cache files
-                try? FileManager.default.removeItem(atPath: path)
-            }
-        }
-        if pruned > 0 { KLog.log("[Notification] Pruned \(pruned) stale icon cache files (>30 days)") }
-        if purgedSenderPics > 0 { KLog.log("[Notification] Purged \(purgedSenderPics) stale sender-pic caches (now use brand fallback)") }
-        if purgedFallbacks > 0 { KLog.log("[Notification] Purged \(purgedFallbacks) pre-rendered fallback icons (will re-render with current asset version)") }
-        KLog.log("[Notification] Loaded \(iconCache.count) cached icons from disk")
-    }
+		let w = image.size.width
+		let h = image.size.height
+		let aspectRatio = max(w, h) / max(min(w, h), 1)
 
-    // MARK: - OTP Extraction
+		// Distinguish app icons from content images:
+		// App icons: small (≤256px), roughly square (aspect ≤1.3)
+		// Content images: larger, often rectangular (profile pics, thumbnails, post images)
+		// If it looks like a content image, use it for THIS notification only (don't cache)
+		//
+		// DM-capable apps (email, messaging, social DMs) send the SENDER'S profile pic as the icon payload, not the app icon.
+		// These change per notification — never cache them.
+		// See `senderPicturePackages` above for the full list.
+		let isSenderPicApp = IconRenderer.senderPicturePackages.contains(packageName)
+		let looksLikeAppIcon = !isSenderPicApp && max(w, h) <= 256 && aspectRatio <= 1.3
+		if !looksLikeAppIcon {
+			KLog.log("[Notification] Content image detected (\(Int(w))x\(Int(h)) ratio=\(String(format: "%.2f", aspectRatio))) for \(packageName) — using but not caching")
+			// Write to a temp file for this notification, don't cache as the app icon
+			let tempPath = NSTemporaryDirectory() + "konnect-content-\(UUID().uuidString).png"
+			do {
+				try received.write(to: URL(fileURLWithPath: tempPath))
+			} catch {
+				KLog.log("[Notification] Content image write failed: \(error)")
 
-    /// Extracts OTP/verification codes from notification text.
-    /// Handles: "OTP is 482916", "Code: 5678", "verification code 1234",
-    /// "Your code is 839201", "PIN: 4829", "2FA code: 192837", etc.
-    private static func extractOTP(from text: String) -> String? {
-        let lowered = text.lowercased()
+				return nil
+			}
 
-        // Must contain a keyword suggesting this is a code/OTP
-        let keywords = ["otp", "code", "pin", "verification", "verify", "2fa",
-                        "one-time", "one time", "passcode", "password", "authentication"]
-        guard keywords.contains(where: { lowered.contains($0) }) else { return nil }
+			return tempPath
+		}
 
-        // Extract 4-8 digit numeric codes (most common OTP format)
-        // Look for standalone digit sequences not part of longer numbers
-        let pattern = #"(?<!\d)(\d{4,8})(?!\d)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else {
-            // Also try alphanumeric codes like "G-482916" or "ABC-1234"
-            // Matches separators like "code: X", "code X", "code is X", "pin is X"
-            let alphaPattern = #"(?i)(?:code|otp|pin)[\s:]+(?:is\s+)?([A-Z0-9][\w-]{3,9})"#
-            guard let alphaRegex = try? NSRegularExpression(pattern: alphaPattern),
-                  let alphaMatch = alphaRegex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-                  let alphaRange = Range(alphaMatch.range(at: 1), in: text) else {
-                return nil
-            }
-            return String(text[alphaRange])
-        }
-        return String(text[range])
-    }
+		KLog.log("[Notification] App icon validated (\(Int(w))x\(Int(h))) for \(packageName)")
 
-    // MARK: - Notification Categories
+		// Cache by package name
+		// Ensure cache directory exists before every write (it may have been purged since app launch)
+		let cacheURL = URL(fileURLWithPath: Self.cacheDir)
+		do {
+			try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
+		} catch {
+			KLog.log("[Notification] Icon cache directory creation FAILED: \(error.localizedDescription)")
 
-    static func registerNotificationCategories() {
-        let replyAction = UNTextInputNotificationAction(identifier: "REPLY_ACTION", title: "Reply", options: [])
-        let replyCategory = UNNotificationCategory(identifier: "NOTIFICATION_REPLY", actions: [replyAction], intentIdentifiers: [])
+			return nil
+		}
 
-        let muteAction = UNNotificationAction(identifier: "MUTE_RINGER", title: "Mute Ringer", options: [])
-        let callCategory = UNNotificationCategory(identifier: "CALL_ACTIONS", actions: [muteAction], intentIdentifiers: [])
+		// Sanitize packageName to prevent path traversal
+		let safePackageName = packageName
+			.replacingOccurrences(of: "..", with: "_")
+			.replacingOccurrences(of: "/", with: "_")
+			.replacingOccurrences(of: "\\", with: "_")
+			.replacingOccurrences(of: "\0", with: "")
 
-        let showInFinderAction = UNNotificationAction(identifier: "SHOW_IN_FINDER", title: "Show in Finder", options: [.foreground])
-        let fileCategory = UNNotificationCategory(identifier: "FILE_RECEIVED", actions: [showInFinderAction], intentIdentifiers: [])
+		let fileURL = cacheURL.appendingPathComponent("\(safePackageName).png")
+		let cachePath = fileURL.path
+		do {
+			try received.write(to: fileURL)
+		} catch {
+			KLog.log("[Notification] Icon cache WRITE FAILED: \(error.localizedDescription) path=\(cachePath)")
 
-        let copyCodeAction = UNNotificationAction(identifier: "COPY_OTP", title: "Copy Code", options: [])
-        let otpCategory = UNNotificationCategory(identifier: "OTP_CODE", actions: [copyCodeAction], intentIdentifiers: [])
+			return nil
+		}
 
-        UNUserNotificationCenter.current().setNotificationCategories([replyCategory, callCategory, fileCategory, otpCategory])
-    }
+		// Verify the file was actually written and has content
+		let fm = FileManager.default
+		if fm.fileExists(atPath: cachePath), let attrs = try? fm.attributesOfItem(atPath: cachePath), let fileSize = attrs[.size] as? Int, fileSize > 0 {
+			Task { @MainActor in
+				Self.iconCache[packageName] = cachePath
+			}
+
+			KLog.log("[Notification] Icon cached: \(fileSize) bytes -> \(cachePath)")
+		} else {
+			KLog.log("[Notification] Icon cache VERIFY FAILED: file missing or empty at \(cachePath)")
+			try? fm.removeItem(atPath: cachePath)
+
+			return nil
+		}
+
+		return cachePath
+	}
+
+	// MARK: - Icon Cache Maintenance
+
+	/// Periodic cleanup: removes stale tmp- hardlinks, content images in /tmp/, and icons older than 30 days.
+	/// Runs at most once per hour to avoid filesystem thrashing.
+	private static func periodicCacheCleanupIfNeeded() {
+		guard Date().timeIntervalSince(lastCacheCleanup) > 3600 else {
+			return
+		}
+
+		lastCacheCleanup = Date()
+
+		// Clean tmp- hardlinks in cache dir (left by UNNotificationAttachment)
+		let cacheDirURL = URL(fileURLWithPath: cacheDir)
+		if let files = try? FileManager.default.contentsOfDirectory(atPath: cacheDir) {
+			let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+			var cleaned = 0
+			for file in files where file.hasSuffix(".png") {
+				if file.hasPrefix("tmp-") {
+					try? FileManager.default.removeItem(atPath: cacheDirURL.appendingPathComponent(file).path)
+					cleaned += 1
+				} else {
+					// Prune old icon cache files at runtime too (not just startup)
+					let path = cacheDirURL.appendingPathComponent(file).path
+					if let attrs = try? FileManager.default.attributesOfItem(atPath: path), let modDate = attrs[.modificationDate] as? Date, modDate < thirtyDaysAgo {
+						let name = String(file.dropLast(4))
+						try? FileManager.default.removeItem(atPath: path)
+						iconCache.removeValue(forKey: name)
+						cleaned += 1
+					}
+				}
+			}
+
+			if cleaned > 0 {
+				KLog.log("[Notification] Periodic cleanup: removed \(cleaned) stale cache files")
+			}
+		}
+
+		// Clean content image temp files in /tmp/ (konnect-content-*.png and konnect-sf-*.png)
+		let tmpDir = NSTemporaryDirectory()
+		if let tmpFiles = try? FileManager.default.contentsOfDirectory(atPath: tmpDir) {
+			var cleaned = 0
+			let oneHourAgo = Date().addingTimeInterval(-3600)
+			for file in tmpFiles where file.hasPrefix("konnect-") && file.hasSuffix(".png") {
+				let path = tmpDir + file
+				if let attrs = try? FileManager.default.attributesOfItem(atPath: path), let modDate = attrs[.modificationDate] as? Date, modDate < oneHourAgo {
+					try? FileManager.default.removeItem(atPath: path)
+					cleaned += 1
+				}
+			}
+
+			if cleaned > 0 {
+				KLog.log("[Notification] Periodic cleanup: removed \(cleaned) temp icon files from /tmp/")
+			}
+		}
+	}
+
+	private static func loadIconCacheFromDisk() {
+		let cacheDirURL = URL(fileURLWithPath: cacheDir)
+		guard let files = try? FileManager.default.contentsOfDirectory(atPath: cacheDir) else {
+			KLog.log("[Notification] Icon cache directory not found or empty")
+
+			return
+		}
+
+		let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+		var pruned = 0
+		var purgedSenderPics = 0
+		var purgedFallbacks = 0
+		for file in files where file.hasSuffix(".png") {
+			// Clean up hardlink temp files left by UNNotificationAttachment
+			if file.hasPrefix("tmp-") {
+				try? FileManager.default.removeItem(atPath: cacheDirURL.appendingPathComponent(file).path)
+				pruned += 1
+				continue
+			}
+
+			let name = String(file.dropLast(4))
+			let fileURL = cacheDirURL.appendingPathComponent(file)
+			let path = fileURL.path
+
+			// Wipe any pre-rendered fallback PNGs from previous app versions.
+			// The new version may render this same package with a real bundled brand asset instead of the old SF Symbol — re-render on first use rather than serve a stale icon from disk.
+			if name.hasPrefix("fallback-") {
+				try? FileManager.default.removeItem(atPath: path)
+				purgedFallbacks += 1
+				continue
+			}
+
+			// Migration: any cached icon for a package now in `senderPicturePackages` is a stale sender profile pic from a previous app version that didn't know to skip caching it.
+			// Delete it so the brand fallback shows instead.
+			if IconRenderer.senderPicturePackages.contains(name) {
+				try? FileManager.default.removeItem(atPath: path)
+				purgedSenderPics += 1
+				continue
+			}
+
+			if let attrs = try? FileManager.default.attributesOfItem(atPath: path), let fileSize = attrs[.size] as? Int, fileSize > 0 {
+				// Prune icons older than 30 days
+				if let modDate = attrs[.modificationDate] as? Date, modDate < thirtyDaysAgo {
+					try? FileManager.default.removeItem(atPath: path)
+					pruned += 1
+					continue
+				}
+
+				iconCache[name] = path
+			} else {
+				// Clean up empty/corrupt cache files
+				try? FileManager.default.removeItem(atPath: path)
+			}
+		}
+
+		if pruned > 0 {
+			KLog.log("[Notification] Pruned \(pruned) stale icon cache files (>30 days)")
+		}
+
+		if purgedSenderPics > 0 {
+			KLog.log("[Notification] Purged \(purgedSenderPics) stale sender-pic caches (now use brand fallback)")
+		}
+
+		if purgedFallbacks > 0 {
+			KLog.log("[Notification] Purged \(purgedFallbacks) pre-rendered fallback icons (will re-render with current asset version)")
+		}
+
+		KLog.log("[Notification] Loaded \(iconCache.count) cached icons from disk")
+	}
+
+	// MARK: - OTP Extraction
+
+	/// Extracts OTP/verification codes from notification text.
+	/// Handles: "OTP is 482916", "Code: 5678", "verification code 1234", "Your code is 839201", "PIN: 4829", "2FA code: 192837", etc.
+	private static func extractOTP(from text: String) -> String? {
+		let lowered = text.lowercased()
+
+		// Must contain a keyword suggesting this is a code/OTP
+		let keywords = ["otp", "code", "pin", "verification", "verify", "2fa",
+						"one-time", "one time", "passcode", "password", "authentication"]
+		guard keywords.contains(where: { lowered.contains($0) }) else { return nil }
+
+		// Extract 4-8 digit numeric codes (most common OTP format)
+		// Look for standalone digit sequences not part of longer numbers
+		let pattern = #"(?<!\d)(\d{4,8})(?!\d)"#
+		guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let range = Range(match.range(at: 1), in: text) else {
+			// Also try alphanumeric codes like "G-482916" or "ABC-1234"
+			// Matches separators like "code: X", "code X", "code is X", "pin is X"
+			let alphaPattern = #"(?i)(?:code|otp|pin)[\s:]+(?:is\s+)?([A-Z0-9][\w-]{3,9})"#
+			guard let alphaRegex = try? NSRegularExpression(pattern: alphaPattern), let alphaMatch = alphaRegex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let alphaRange = Range(alphaMatch.range(at: 1), in: text) else {
+				return nil
+			}
+
+			return String(text[alphaRange])
+		}
+
+		return String(text[range])
+	}
+
+	// MARK: - Notification Categories
+
+	static func registerNotificationCategories() {
+		let replyAction = UNTextInputNotificationAction(identifier: "REPLY_ACTION", title: "Reply", options: [])
+		let replyCategory = UNNotificationCategory(identifier: "NOTIFICATION_REPLY", actions: [replyAction], intentIdentifiers: [])
+
+		let muteAction = UNNotificationAction(identifier: "MUTE_RINGER", title: "Mute Ringer", options: [])
+		let callCategory = UNNotificationCategory(identifier: "CALL_ACTIONS", actions: [muteAction], intentIdentifiers: [])
+
+		let showInFinderAction = UNNotificationAction(identifier: "SHOW_IN_FINDER", title: "Show in Finder", options: [.foreground])
+		let fileCategory = UNNotificationCategory(identifier: "FILE_RECEIVED", actions: [showInFinderAction], intentIdentifiers: [])
+
+		let copyCodeAction = UNNotificationAction(identifier: "COPY_OTP", title: "Copy Code", options: [])
+		let otpCategory = UNNotificationCategory(identifier: "OTP_CODE", actions: [copyCodeAction], intentIdentifiers: [])
+
+		UNUserNotificationCenter.current().setNotificationCategories([replyCategory, callCategory, fileCategory, otpCategory])
+	}
 }
 

@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 
 guard CommandLine.arguments.count == 4 else {
 	fputs("Usage: verify_signature <file-path> <base64-signature> <base64-public-key>\n", stderr)

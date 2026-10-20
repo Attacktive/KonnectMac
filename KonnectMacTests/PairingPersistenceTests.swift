@@ -1,27 +1,29 @@
-import XCTest
 import UserNotifications
+import XCTest
 @testable import KonnectMac
 
 @MainActor
 final class PairingPersistenceTests: XCTestCase {
-    func testReconnectEndpointSurvivesFreshConfigurationInstance() throws {
-        let suiteName = "KonnectMacTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-            try? FileManager.default.removeItem(at: directory)
-        }
+	// MARK: - Saved Reconnect Endpoints
 
-        let first = Config(defaults: defaults, pairingDirectory: directory)
-        first.saveDeviceIP("172.16.1.42", for: "android")
-        first.saveDevicePort(1716, for: "android")
+	func testReconnectEndpointSurvivesFreshConfigurationInstance() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		defer {
+			defaults.removePersistentDomain(forName: suiteName)
+			try? FileManager.default.removeItem(at: directory)
+		}
 
-        let second = Config(defaults: defaults, pairingDirectory: directory)
+		let first = Config(defaults: defaults, pairingDirectory: directory)
+		first.saveDeviceIP("172.16.1.42", for: "android")
+		first.saveDevicePort(1716, for: "android")
 
-        XCTAssertEqual(second.savedDeviceIP(for: "android"), "172.16.1.42")
-        XCTAssertEqual(second.savedDevicePort(for: "android"), 1716)
-    }
+		let second = Config(defaults: defaults, pairingDirectory: directory)
+
+		XCTAssertEqual(second.savedDeviceIP(for: "android"), "172.16.1.42")
+		XCTAssertEqual(second.savedDevicePort(for: "android"), 1716)
+	}
 
 	func testObsoleteLocalListeningPortIsRejectedOnLaunch() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
@@ -43,25 +45,27 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertNil(config.savedDevicePort(for: "desktop"))
 	}
 
-    func testUnpairClearsSavedReconnectEndpoint() throws {
-        let suiteName = "KonnectMacTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-            try? FileManager.default.removeItem(at: directory)
-        }
+	func testUnpairClearsSavedReconnectEndpoint() throws {
+		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
+		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		defer {
+			defaults.removePersistentDomain(forName: suiteName)
+			try? FileManager.default.removeItem(at: directory)
+		}
 
-        let config = Config(defaults: defaults, pairingDirectory: directory)
-        config.saveDeviceName("Android", for: "android")
-        config.saveDeviceIP("172.16.1.42", for: "android")
-        config.saveDevicePort(1716, for: "android")
-        config.removePairedDevice(id: "android")
+		let config = Config(defaults: defaults, pairingDirectory: directory)
+		config.saveDeviceName("Android", for: "android")
+		config.saveDeviceIP("172.16.1.42", for: "android")
+		config.saveDevicePort(1716, for: "android")
+		config.removePairedDevice(id: "android")
 
-        XCTAssertNil(config.savedDeviceName(for: "android"))
-        XCTAssertNil(config.savedDeviceIP(for: "android"))
-        XCTAssertNil(config.savedDevicePort(for: "android"))
-    }
+		XCTAssertNil(config.savedDeviceName(for: "android"))
+		XCTAssertNil(config.savedDeviceIP(for: "android"))
+		XCTAssertNil(config.savedDevicePort(for: "android"))
+	}
+
+	// MARK: - Device Identity Migration
 
 	func testDeviceIdPersistsAcrossConfigurationInstances() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
@@ -81,10 +85,8 @@ final class PairingPersistenceTests: XCTestCase {
 	func testLegacyHyphenatedDeviceIdIsMigratedToCompliantId() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
 		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-			UUID().uuidString,
-			isDirectory: true
-		)
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+
 		defer {
 			defaults.removePersistentDomain(forName: suiteName)
 			try? FileManager.default.removeItem(at: directory)
@@ -104,6 +106,7 @@ final class PairingPersistenceTests: XCTestCase {
 
 		var identityResets = 0
 		try config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+
 		try config.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
 
 		XCTAssertEqual(identityResets, 1)
@@ -117,6 +120,7 @@ final class PairingPersistenceTests: XCTestCase {
 
 		let relaunched = Config(defaults: defaults, pairingDirectory: directory)
 		try relaunched.migrateLegacyDeviceIdIfNeeded { identityResets += 1 }
+
 		XCTAssertEqual(relaunched.deviceId, config.deviceId)
 		XCTAssertEqual(identityResets, 1)
 	}
@@ -124,10 +128,8 @@ final class PairingPersistenceTests: XCTestCase {
 	func testCompliantPersistedDeviceIdIsPreservedWithoutMigration() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
 		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-			UUID().uuidString,
-			isDirectory: true
-		)
+		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+
 		defer {
 			defaults.removePersistentDomain(forName: suiteName)
 			try? FileManager.default.removeItem(at: directory)
@@ -210,6 +212,8 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
 		XCTAssertNil(relaunched.savedDeviceName(for: "android"))
 	}
+
+	// MARK: - Notification App Preferences
 
 	func testNotificationAppFiltersAreDeviceScopedAndPersist() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
@@ -376,6 +380,8 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertFalse(NotificationPlugin.isDeviceEligible(deviceId: deviceId, packageName: packageName, config: config))
 	}
 
+	// MARK: - Muted Call Notifications
+
 	func testMutedVoIPCallsAreDiscoveredButDoNotStartCallAlerts() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
 		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -434,6 +440,7 @@ final class PairingPersistenceTests: XCTestCase {
 
 		XCTAssertEqual(telephony.endedCalls, 1)
 	}
+
 	func testMutedSixFieldAndroidGroupNotificationsAreDiscoveredAndFiltered() throws {
 		let suiteName = "KonnectMacTests.\(UUID().uuidString)"
 		let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -458,6 +465,8 @@ final class PairingPersistenceTests: XCTestCase {
 		XCTAssertFalse(config.isNotificationAppEnabled(packageName: "com.whatsapp", for: device.id))
 	}
 
+	// MARK: - Notification Delivery Ordering
+
 	func testDeliveryQueueCoalescesUpdatesWhileAnotherAddIsInFlight() {
 		let identifier = "notif-phone-a|0|com.example.chat|42|null|1000"
 		var latest = 1
@@ -475,6 +484,7 @@ final class PairingPersistenceTests: XCTestCase {
 		func makeRequest(_ body: String) -> UNNotificationRequest {
 			let content = UNMutableNotificationContent()
 			content.body = body
+
 			return UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
 		}
 
@@ -507,6 +517,7 @@ final class PairingPersistenceTests: XCTestCase {
 		func makeRequest(id: String, body: String) -> UNNotificationRequest {
 			let content = UNMutableNotificationContent()
 			content.body = body
+
 			return UNNotificationRequest(identifier: id, content: content, trigger: nil)
 		}
 
